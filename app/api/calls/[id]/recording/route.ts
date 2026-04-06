@@ -2,14 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
 
-/**
- * Returns the Twilio recording URL with Basic Auth credentials embedded
- * so the browser can fetch the audio directly — no server-side proxying needed.
- * We redirect to a credentialed URL to avoid streaming large audio files through
- * our server (which causes 502s on Render due to response timeouts).
- */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await auth();
@@ -30,29 +24,40 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  // Embed Twilio credentials directly in the URL so the browser fetches it.
-  // e.g. https://api.twilio.com/... → https://ACXXX:token@api.twilio.com/...
-  const sid = process.env.TWILIO_ACCOUNT_SID ?? '';
-  const token = process.env.TWILIO_AUTH_TOKEN ?? '';
+  const twilioAuth = Buffer.from(
+    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+  ).toString('base64');
+
+  // Stream with a 25s timeout — Render kills at 30s
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
 
   try {
-    const parsed = new URL(url);
-    parsed.username = sid;
-    parsed.password = token;
-    // Redirect to the credentialed URL — browser fetches audio directly from Twilio
-    return NextResponse.redirect(parsed.toString(), { status: 302 });
-  } catch {
-    // Fallback: proxy if URL parsing fails
-    const twilioAuth = Buffer.from(`${sid}:${token}`).toString('base64');
-    const resp = await fetch(url, { headers: { Authorization: `Basic ${twilioAuth}` } });
+    const resp = await fetch(url, {
+      headers: { Authorization: `Basic ${twilioAuth}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
     if (!resp.ok) {
       return NextResponse.json({ error: 'Recording not available' }, { status: resp.status });
     }
+
+    // Stream the body — don't buffer the whole file in memory
     return new NextResponse(resp.body, {
+      status: 200,
       headers: {
         'Content-Type': resp.headers.get('Content-Type') ?? 'audio/mpeg',
+        'Content-Length': resp.headers.get('Content-Length') ?? '',
+        'Accept-Ranges': 'bytes',
         'Cache-Control': 'private, max-age=3600',
       },
     });
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      return NextResponse.json({ error: 'Recording fetch timed out' }, { status: 504 });
+    }
+    return NextResponse.json({ error: 'Failed to fetch recording' }, { status: 500 });
   }
 }
