@@ -7,6 +7,9 @@ import sql from '@/lib/db';
  * Saves the recording URL and kicks off transcription.
  */
 export async function POST(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const callIdFromUrl = searchParams.get('callId');
+
   const formData = await req.formData();
   const callSid = formData.get('CallSid') as string;
   const recordingUrl = formData.get('RecordingUrl') as string;
@@ -26,14 +29,22 @@ export async function POST(req: NextRequest) {
     WHERE twilio_call_sid = ${callSid}
   `;
 
-  await sql`
-    INSERT INTO call_events (call_id, event_type, details)
-    SELECT id, 'recording_ready', ${JSON.stringify({ url: mp3Url, duration: recordingDuration })}
-    FROM calls WHERE twilio_call_sid = ${callSid}
-  `;
+  // Resolve callId — prefer URL param (most reliable), fall back to DB lookup
+  let callId = callIdFromUrl;
+  if (!callId) {
+    const rows = await sql`SELECT id FROM calls WHERE twilio_call_sid = ${callSid} LIMIT 1`;
+    callId = rows[0]?.id as string | null;
+  }
+
+  if (callId) {
+    await sql`
+      INSERT INTO call_events (call_id, event_type, details)
+      VALUES (${callId}, 'recording_ready', ${JSON.stringify({ url: mp3Url, duration: recordingDuration })})
+    `;
+  }
 
   // Transcribe in background — don't block the Twilio callback
-  transcribeRecording(callSid, mp3Url).catch((err) =>
+  transcribeRecording(callSid, callId, mp3Url).catch((err) =>
     console.error(`[Transcribe] Error for callSid=${callSid}:`, err?.message ?? err)
   );
 
@@ -42,8 +53,9 @@ export async function POST(req: NextRequest) {
 
 /**
  * Fetch the recording from Twilio and transcribe it via Deepgram pre-recorded API.
+ * Merges our SAY actions (speaker 1) with Deepgram IVR utterances (speaker 0).
  */
-async function transcribeRecording(callSid: string, mp3Url: string) {
+async function transcribeRecording(callSid: string, callId: string | null, mp3Url: string) {
   const dgKey = process.env.DEEPGRAM_API_KEY;
   if (!dgKey) {
     console.warn('[Transcribe] DEEPGRAM_API_KEY not set — skipping transcription');
@@ -55,7 +67,7 @@ async function transcribeRecording(callSid: string, mp3Url: string) {
     `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
   ).toString('base64');
 
-  console.log(`[Transcribe] Fetching recording for callSid=${callSid}`);
+  console.log(`[Transcribe] Fetching recording callSid=${callSid} callId=${callId}`);
   const audioResp = await fetch(mp3Url, {
     headers: { Authorization: `Basic ${twilioAuth}` },
   });
@@ -86,35 +98,43 @@ async function transcribeRecording(callSid: string, mp3Url: string) {
 
   const result = await dgResp.json();
 
-  // Extract utterances with speaker labels — all marked as speaker 0 (IVR side)
+  // Extract utterances — all marked speaker 0 (IVR / cruise line side)
   const dgUtterances: Array<{ speaker: number; text: string; start: number; end: number }> =
     result?.results?.utterances?.map((u: any) => ({
-      speaker: 0, // IVR / cruise line
+      speaker: 0,
       text: u.transcript,
       start: u.start,
       end: u.end,
     })) ?? [];
 
-  // Look up callId so we can merge in SAY actions from call_events
-  const callRows = await sql`SELECT id, created_at FROM calls WHERE twilio_call_sid = ${callSid} LIMIT 1`;
-  const callId = callRows[0]?.id as string | undefined;
-  const callCreatedAt = callRows[0]?.created_at ? new Date(callRows[0].created_at as string).getTime() : 0;
+  let utterances = [...dgUtterances];
 
-  // Merge in our SAY actions as speaker 1 (Our System) — interleave by timestamp
-  let utterances = dgUtterances;
-  if (callId && callCreatedAt) {
+  // Merge our SAY actions as speaker 1 (Our System)
+  if (callId) {
+    const callRows = await sql`SELECT created_at FROM calls WHERE id = ${callId} LIMIT 1`;
+    const callCreatedAt = callRows[0]?.created_at instanceof Date
+      ? callRows[0].created_at.getTime()
+      : new Date(callRows[0]?.created_at as string).getTime();
+
     const sayEvents = await sql`
       SELECT details, created_at FROM call_events
       WHERE call_id = ${callId} AND event_type = 'ai_action'
       ORDER BY created_at ASC
     `;
+
+    console.log(`[Transcribe] Found ${sayEvents.length} ai_action events for callId=${callId}`);
+
     for (const ev of sayEvents) {
-      const details = typeof ev.details === 'string' ? JSON.parse(ev.details as string) : ev.details;
+      const details = (typeof ev.details === 'string' ? JSON.parse(ev.details as string) : ev.details) as Record<string, string>;
       if (details?.action !== 'SAY' || !details?.phrase) continue;
-      const ts = (new Date(ev.created_at as string).getTime() - callCreatedAt) / 1000;
+      const evTime = ev.created_at instanceof Date
+        ? ev.created_at.getTime()
+        : new Date(ev.created_at as string).getTime();
+      const ts = (evTime - callCreatedAt) / 1000;
       utterances.push({ speaker: 1, text: details.phrase, start: ts, end: ts + 1 });
     }
-    // Sort by start time so SAY actions interleave correctly with IVR speech
+
+    // Sort so SAY actions interleave correctly with IVR speech by timestamp
     utterances.sort((a, b) => a.start - b.start);
   }
 
@@ -123,10 +143,9 @@ async function transcribeRecording(callSid: string, mp3Url: string) {
     .map((u) => `${u.speaker === 0 ? 'IVR' : 'System'}: ${u.text}`)
     .join('\n');
 
-  // Also get the full single transcript
   const fullText = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? plainTranscript;
 
-  console.log(`[Transcribe] Got ${utterances.length} utterances (${dgUtterances.length} from Deepgram + ${utterances.length - dgUtterances.length} SAY actions) for callSid=${callSid}`);
+  console.log(`[Transcribe] Got ${utterances.length} utterances (${dgUtterances.length} IVR + ${utterances.length - dgUtterances.length} SAY) for callSid=${callSid}`);
 
   // Save transcript to DB
   await sql`
@@ -135,10 +154,10 @@ async function transcribeRecording(callSid: string, mp3Url: string) {
     WHERE twilio_call_sid = ${callSid}
   `;
 
-  // Also save as a call event
-  await sql`
-    INSERT INTO call_events (call_id, event_type, details)
-    SELECT id, 'transcript_ready', ${JSON.stringify({ utteranceCount: utterances.length, textLength: fullText.length })}
-    FROM calls WHERE twilio_call_sid = ${callSid}
-  `;
+  if (callId) {
+    await sql`
+      INSERT INTO call_events (call_id, event_type, details)
+      VALUES (${callId}, 'transcript_ready', ${JSON.stringify({ utteranceCount: utterances.length, textLength: fullText.length })})
+    `;
+  }
 }

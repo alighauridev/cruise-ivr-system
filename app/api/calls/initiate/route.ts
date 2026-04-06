@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   console.log(`[Initiate] callId=${callId} ivrUrl=${ivrUrl}`);
 
   try {
-    const recordingCallbackUrl = `${baseUrl}/api/calls/recording`;
+    const recordingCallbackUrl = `${baseUrl}/api/calls/recording?callId=${callId}`;
     const call = await twilioClient.calls.create({
       to: toNumber,
       from: twilioPhone,
