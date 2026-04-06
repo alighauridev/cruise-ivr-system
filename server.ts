@@ -12,27 +12,30 @@ const port = parseInt(process.env.PORT ?? '3003', 10);
 const app = next({ dev, port });
 const handle = app.getRequestHandler();
 
+// Create WebSocket server BEFORE Next.js prepare so our handler wins
+const wss = new WebSocketServer({ noServer: true });
+wss.on('connection', (ws, req) => {
+  handleMediaStream(ws, req);
+});
+
 app.prepare().then(() => {
   const httpServer = http.createServer((req, res) => {
     const parsedUrl = parse(req.url ?? '/', true);
     handle(req, res, parsedUrl);
   });
 
-  // WebSocket server for Twilio Media Streams — path-filtered
-  const wss = new WebSocketServer({ noServer: true });
-  wss.on('connection', (ws, req) => {
-    handleMediaStream(ws, req);
-  });
-
-  const nextUpgradeHandler = app.getUpgradeHandler();
+  // Register our upgrade handler FIRST — before Next.js upgrade handler.
+  // This ensures /media-stream WebSocket is always caught by our WSS,
+  // not swallowed by Next.js internals.
   httpServer.on('upgrade', async (req, socket, head) => {
     const { pathname } = parse(req.url ?? '/');
     if (pathname === '/media-stream') {
-      console.log(`[WS] Upgrade request for /media-stream`);
+      console.log(`[WS] Upgrade request for /media-stream from ${req.socket.remoteAddress}`);
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
       });
     } else {
+      const nextUpgradeHandler = app.getUpgradeHandler();
       await nextUpgradeHandler(req, socket, head);
     }
   });

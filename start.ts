@@ -30,7 +30,7 @@ function updateEnvPublicUrl(url: string) {
 function startTunnel(): Promise<{ url: string; proc: ChildProcess }> {
   return new Promise((resolve, reject) => {
     console.log('[setup] Starting cloudflared tunnel...');
-    const proc = spawn('npx', ['cloudflared', 'tunnel', '--url', `http://localhost:${LOCAL_PORT}`], {
+    const proc = spawn('npx', ['cloudflared', 'tunnel', '--protocol', 'http2', '--url', `http://localhost:${LOCAL_PORT}`], {
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
