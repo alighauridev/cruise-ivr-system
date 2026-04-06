@@ -109,7 +109,9 @@ async function transcribeRecording(callSid: string, callId: string | null, mp3Ur
 
   let utterances = [...dgUtterances];
 
-  // Merge our SAY actions as speaker 1 (Our System)
+  // Merge our SAY actions as speaker 1 (Our System).
+  // Also re-label any Deepgram utterances that overlap in time with our SAY actions
+  // (Deepgram picks up our TTS audio and transcribes it as speaker 0 — fix that here).
   if (callId) {
     const callRows = await sql`SELECT created_at FROM calls WHERE id = ${callId} LIMIT 1`;
     const callCreatedAt = callRows[0]?.created_at instanceof Date
@@ -124,6 +126,8 @@ async function transcribeRecording(callSid: string, callId: string | null, mp3Ur
 
     console.log(`[Transcribe] Found ${sayEvents.length} ai_action events for callId=${callId}`);
 
+    // Build list of our SAY windows: { start, end, phrase }
+    const sayWindows: Array<{ start: number; end: number; phrase: string }> = [];
     for (const ev of sayEvents) {
       const details = (typeof ev.details === 'string' ? JSON.parse(ev.details as string) : ev.details) as Record<string, string>;
       if (details?.action !== 'SAY' || !details?.phrase) continue;
@@ -131,10 +135,29 @@ async function transcribeRecording(callSid: string, callId: string | null, mp3Ur
         ? ev.created_at.getTime()
         : new Date(ev.created_at as string).getTime();
       const ts = (evTime - callCreatedAt) / 1000;
-      utterances.push({ speaker: 1, text: details.phrase, start: ts, end: ts + 1 });
+      // Estimate duration: ~150ms per character of the phrase
+      const duration = Math.max(1, details.phrase.length * 0.075);
+      sayWindows.push({ start: ts, end: ts + duration, phrase: details.phrase });
     }
 
-    // Sort so SAY actions interleave correctly with IVR speech by timestamp
+    // Re-label Deepgram utterances that fall within a SAY window as speaker 1
+    // and remove them (we'll use the exact SAY phrase instead)
+    const dgFiltered = utterances.filter((u) => {
+      const overlap = sayWindows.some(
+        (w) => u.start >= w.start - 1 && u.start <= w.end + 1
+      );
+      return !overlap;
+    });
+
+    // Add our SAY actions with exact text and speaker 1
+    const sayUtterances = sayWindows.map((w) => ({
+      speaker: 1,
+      text: w.phrase,
+      start: w.start,
+      end: w.end,
+    }));
+
+    utterances = [...dgFiltered, ...sayUtterances];
     utterances.sort((a, b) => a.start - b.start);
   }
 
