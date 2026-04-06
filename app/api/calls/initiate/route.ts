@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   const callId = callRows[0].id as string;
 
   // Use PUBLIC_URL env var if set (tunnel URL), otherwise fall back to NEXTAUTH_URL
-  const baseUrl = (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? '').replace(/\/$/, '');
+  const baseUrl = (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? '').trim().replace(/\/$/, '');
   if (!baseUrl || baseUrl.includes('localhost')) {
     await sql`UPDATE calls SET status = 'failed', error_message = 'PUBLIC_URL not set — Twilio requires a public HTTPS URL. Set PUBLIC_URL in .env.local to your tunnel URL (e.g. ngrok/cloudflared).' WHERE id = ${callId}`;
     return NextResponse.json({ error: 'PUBLIC_URL not configured. Twilio requires a public HTTPS URL — set PUBLIC_URL in .env.local to your ngrok or cloudflared tunnel URL.' }, { status: 500 });

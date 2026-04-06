@@ -59,7 +59,7 @@ interface SessionState {
 }
 
 const BASE_URL = () =>
-  (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? 'http://localhost:3003').replace(/\/$/, '');
+  (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? 'http://localhost:3003').trim().replace(/\/$/, '');
 
 const STREAM_URL = () => {
   const base = BASE_URL();
