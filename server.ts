@@ -30,15 +30,6 @@ async function handleRecordingProxy(
   callId: string
 ) {
   try {
-    // Verify session cookie — look for next-auth session token
-    const cookie = req.headers.cookie ?? '';
-    const hasSession = cookie.includes('next-auth.session-token') || cookie.includes('__Secure-next-auth.session-token');
-    if (!hasSession) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized' }));
-      return;
-    }
-
     const rows = await sql`SELECT recording_url FROM calls WHERE id = ${callId} LIMIT 1`;
     const recordingUrl = rows[0]?.recording_url as string | undefined;
 
