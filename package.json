@@ -6,8 +6,8 @@
     "dev": "ts-node --project tsconfig.server.json -r tsconfig-paths/register server.ts",
     "start:dev": "ts-node --project tsconfig.server.json -r tsconfig-paths/register start.ts",
     "dev:next": "next dev -p 3003",
-    "build": "next build && tsc --project tsconfig.server.json",
-    "start": "node -r ./.server-dist/_path-register.js .server-dist/server.js",
+    "build": "next build && npx esbuild server.ts --bundle --platform=node --packages=external --tsconfig=tsconfig.server.json --outfile=.server-dist/server.js",
+    "start": "node .server-dist/server.js",
     "lint": "eslint"
   },
   "dependencies": {
