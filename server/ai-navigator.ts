@@ -83,12 +83,16 @@ export async function detectAgentWithAI(
       messages: [
         {
           role: 'system',
-          content:
-            'You detect if a live human agent (not IVR/bot) has answered a phone. Respond with only "YES" or "NO".\nYES = human said their name, greeted personally, asked how they can help.\nNO = automated menu, hold music narration, recorded message.',
+          content: `You detect if a LIVE HUMAN agent has answered a cruise line phone call. Respond ONLY with "YES" or "NO".
+
+YES = real human: said their personal name ("This is Sarah", "My name is Chen"), greeted you personally and is waiting for YOUR response.
+NO = any of these: IVR menu, hold music, recorded message, virtual assistant, AI bot, automated system, or anything that says "virtual assistant", "automated", "AI", "designed to help", "press 1", "please hold".
+
+Be conservative — when in doubt say NO. A virtual assistant saying "How can I help you?" is still NO.`,
         },
         {
           role: 'user',
-          content: `Recent context:\n${context}\n\nNew transcript: "${transcript}"\n\nIs this a live human agent?`,
+          content: `Recent conversation:\n${context}\n\nLatest: "${transcript}"\n\nLive human agent?`,
         },
       ],
       max_tokens: 5,

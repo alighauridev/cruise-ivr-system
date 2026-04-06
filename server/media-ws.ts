@@ -389,10 +389,17 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.isVirtualAssistant = true;
   }
 
-  // 3. Agent phrase detection — skip if we know it's a virtual assistant
+  // 3. Agent detection — phrase match as fast pre-filter, then AI confirmation
   if (!state.isVirtualAssistant && detectAgentFromTranscript(transcript)) {
-    await handleAgentDetected(state, transcript);
-    return;
+    // Phrase matched — confirm with AI before triggering transfer
+    const recentHistory = state.history.slice(-4).map((t) => `${t.speaker}: ${t.text}`);
+    const isRealAgent = await detectAgentWithAI(transcript, recentHistory);
+    if (isRealAgent) {
+      await handleAgentDetected(state, transcript);
+      return;
+    } else {
+      console.log(`[IVR] Phrase matched but AI says NOT a real agent — skipping callId=${state.callId}`);
+    }
   }
 
   // 3. IVR executor mode
