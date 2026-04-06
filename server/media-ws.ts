@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import { IncomingMessage } from 'http';
 import { twilioClient } from '@/lib/twilio';
 import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigator';
-import { detectAgentFromTranscript, detectVoicemail } from '@/lib/deepgram';
+import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
 import { notifyAgentDetected } from '@/lib/notifications';
 import { generateTTSMulaw } from '@/lib/openai-tts';
 
@@ -56,6 +56,8 @@ interface SessionState {
   holdStatusUpdated: boolean;
   /** Reference to the current Twilio media stream WS — used to send TTS audio back. */
   twilioWs: WebSocket | null;
+  /** Set to true if a virtual assistant phrase has been heard — suppresses agent detection. */
+  isVirtualAssistant: boolean;
 }
 
 const BASE_URL = () =>
@@ -160,6 +162,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             reconnectTimer: null,
             lastTranscriptAt: Date.now(),
             holdStatusUpdated: false,
+            isVirtualAssistant: false,
             twilioWs: ws,
           };
 
@@ -380,8 +383,14 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     return;
   }
 
-  // 2. Agent phrase detection
-  if (detectAgentFromTranscript(transcript)) {
+  // 2. Virtual assistant detection — suppress agent detection for this session
+  if (detectVirtualAssistant(transcript)) {
+    console.log(`[IVR] Virtual assistant detected — suppressing agent detection callId=${state.callId}`);
+    state.isVirtualAssistant = true;
+  }
+
+  // 3. Agent phrase detection — skip if we know it's a virtual assistant
+  if (!state.isVirtualAssistant && detectAgentFromTranscript(transcript)) {
     await handleAgentDetected(state, transcript);
     return;
   }

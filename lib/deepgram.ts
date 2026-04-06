@@ -60,8 +60,34 @@ export const VOICEMAIL_PHRASES = [
   'leave your name and number',
 ];
 
+// Phrases that indicate a virtual assistant / AI bot — NOT a real human agent.
+// If any of these are detected, suppress agent detection even if agent phrases match.
+export const VIRTUAL_ASSISTANT_PHRASES = [
+  'virtual assistant',
+  'automated assistant',
+  'ai assistant',
+  'automated system',
+  'this is an automated',
+  'you have reached an automated',
+  'our automated',
+  'speaking with a virtual',
+  'designed to listen and assist',
+  'designed to help you',
+  'i am an ai',
+  'i am a virtual',
+  'i\'m a virtual',
+  'i\'m an automated',
+];
+
+export function detectVirtualAssistant(transcript: string): boolean {
+  const lower = transcript.toLowerCase();
+  return VIRTUAL_ASSISTANT_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
 export function detectAgentFromTranscript(transcript: string): boolean {
   const lower = transcript.toLowerCase();
+  // If it's a virtual assistant, never count as a real agent
+  if (detectVirtualAssistant(lower)) return false;
   return AGENT_DETECTION_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
