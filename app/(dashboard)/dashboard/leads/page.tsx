@@ -124,8 +124,15 @@ export default function LeadsPage() {
     fd.append('directoryId', selectedDir);
     const r = await fetch('/api/leads/upload', { method: 'POST', body: fd });
     const d = await r.json();
-    alert(`Imported ${d.imported} of ${d.total} leads`);
+    if (d.error) {
+      alert(`Import failed: ${d.error}`);
+    } else {
+      const ivrMsg = d.ivrConfigsCreated > 0 ? ` (${d.ivrConfigsCreated} IVR configs auto-created)` : '';
+      alert(`Imported ${d.imported} of ${d.total} leads${ivrMsg}`);
+    }
     await loadLeads();
+    await loadDirectories();
+    fetch('/api/ivr-configs').then(r => r.json()).then(d => setIvrConfigs(d.configs ?? []));
     if (fileRef.current) fileRef.current.value = '';
   }
 
@@ -196,7 +203,7 @@ export default function LeadsPage() {
                   onChange={(e) => setSearch(e.target.value)}
                   className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
-                <input ref={fileRef} type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" />
+                <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleCSVUpload} className="hidden" />
                 <button
                   onClick={() => fileRef.current?.click()}
                   className="flex items-center gap-2 text-gray-400 hover:text-white border border-gray-700 hover:border-gray-600 text-sm px-3 py-2 rounded-xl transition-colors"

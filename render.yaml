@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: cruise-ivr-system
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/auth/session
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3003
+      # Set these in the Render dashboard — do NOT commit secrets to git:
+      # - key: DATABASE_URL
+      # - key: NEXTAUTH_SECRET
+      # - key: NEXTAUTH_URL          (your Render service URL, e.g. https://cruise-ivr-system.onrender.com)
+      # - key: PUBLIC_URL            (same as NEXTAUTH_URL)
+      # - key: TWILIO_ACCOUNT_SID
+      # - key: TWILIO_AUTH_TOKEN
+      # - key: TWILIO_PHONE_NUMBER
+      # - key: DEEPGRAM_API_KEY
+      # - key: OPENAI_API_KEY
+      # - key: DEFAULT_TRANSFER_NUMBER

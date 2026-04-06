@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
   }
   const ivrUrl = `${baseUrl}/api/calls/ivr-handler?callId=${callId}&step=0`;
   const statusCallbackUrl = `${baseUrl}/api/calls/status`;
+  console.log(`[Initiate] callId=${callId} ivrUrl=${ivrUrl}`);
 
   try {
     const recordingCallbackUrl = `${baseUrl}/api/calls/recording`;

@@ -5,17 +5,15 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLoggedIn = !!req.auth;
 
-  // Twilio webhook routes must be public — Twilio has no session cookie
+  // Twilio webhook routes must be public — Twilio has no session cookie.
+  // All /api/ routes do their own auth check internally, so they're safe to
+  // pass through middleware. This also allows warmup requests to compile routes.
   const publicPaths = [
     '/login',
     '/register',
-    '/api/auth',
-    '/api/calls/ivr-handler',
-    '/api/calls/status',
-    '/api/calls/hold-detect',
-    '/api/calls/record-loop',
-    '/api/calls/transcript',
-    '/api/calls/recording',
+    '/api/',
+    '/media-stream', // Twilio WebSocket — no browser session, auth handled in media-ws.ts
+    '/tts/',         // TTS audio files served to Twilio <Play> — no session
   ];
   const isPublic = publicPaths.some((p) => pathname.startsWith(p));
 

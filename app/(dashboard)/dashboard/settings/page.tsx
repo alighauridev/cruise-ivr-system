@@ -19,6 +19,7 @@ export default function SettingsPage() {
     transfer_phone: '',
     notification_preference: 'sms',
     notification_phone: '',
+    auto_callback_enabled: false,
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,6 +33,7 @@ export default function SettingsPage() {
           transfer_phone: d.user?.transfer_phone ?? '',
           notification_preference: d.user?.notification_preference ?? 'sms',
           notification_phone: d.user?.notification_phone ?? '',
+          auto_callback_enabled: d.settings?.auto_callback_enabled === 'true',
         });
       });
   }, []);
@@ -42,7 +44,14 @@ export default function SettingsPage() {
     await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        transfer_phone: form.transfer_phone,
+        notification_preference: form.notification_preference,
+        notification_phone: form.notification_phone,
+        settings: {
+          auto_callback_enabled: form.auto_callback_enabled ? 'true' : 'false',
+        },
+      }),
     });
     setSaving(false);
     setSaved(true);
@@ -129,6 +138,26 @@ export default function SettingsPage() {
                 className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
               />
               <p className="text-xs text-gray-600 mt-1.5">Phone number that receives SMS alerts when an agent is detected.</p>
+            </div>
+
+            <div className="flex items-center justify-between py-3 border-t border-gray-800">
+              <div>
+                <p className="text-sm text-gray-300 font-medium">Auto-connect when agent detected</p>
+                <p className="text-xs text-gray-600 mt-0.5">Automatically call your transfer number and bridge you to the live agent.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, auto_callback_enabled: !f.auto_callback_enabled }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  form.auto_callback_enabled ? 'bg-blue-600' : 'bg-gray-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                    form.auto_callback_enabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
             </div>
 
             <button

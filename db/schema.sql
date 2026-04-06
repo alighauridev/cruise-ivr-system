@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS calls (
   hold_duration_seconds INTEGER,
   total_duration_seconds INTEGER,
   recording_url VARCHAR(500),
+  transcript JSONB,
   error_message TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

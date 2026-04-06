@@ -5,7 +5,11 @@
     "moduleResolution": "node",
     "noEmit": false,
     "outDir": ".server-dist",
-    "incremental": false
+    "rootDir": ".",
+    "incremental": false,
+    "paths": {
+      "@/*": ["./*"]
+    }
   },
-  "include": ["server.ts", "server/**/*.ts", "lib/**/*.ts"]
+  "include": ["server.ts", "_path-register.ts", "server/**/*.ts", "lib/**/*.ts"]
 }

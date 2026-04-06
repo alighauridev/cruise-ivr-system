@@ -34,7 +34,8 @@ AGENT_DETECTED`;
 
 export async function decideAction(
   ivrTranscript: string,
-  history: ConversationTurn[]
+  history: ConversationTurn[],
+  forceGpt4o = false
 ): Promise<AIAction> {
   const historyText = history
     .map((t) => `${t.speaker === 'ivr' ? 'IVR' : 'US'}: ${t.text}`)
@@ -44,14 +45,17 @@ export async function decideAction(
     ? `Conversation so far:\n${historyText}\n\nIVR just said: "${ivrTranscript}"\n\nWhat should we do?`
     : `IVR just said: "${ivrTranscript}"\n\nWhat should we do?`;
 
+  // Use gpt-4o for complex/long conversations, mini for everything else (faster + cheaper)
+  const model = forceGpt4o || history.length > 8 ? 'gpt-4o' : 'gpt-4o-mini';
+
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userMessage },
       ],
-      max_tokens: 50,
+      max_tokens: 20,
       temperature: 0,
     });
 
@@ -60,6 +64,40 @@ export async function decideAction(
   } catch (err) {
     console.error('[AI Navigator] OpenAI error:', err);
     return { type: 'WAIT' };
+  }
+}
+
+/**
+ * Two-stage agent classifier:
+ * Stage 1: fast phrase match (called separately via detectAgentFromTranscript)
+ * Stage 2: GPT-4o-mini semantic classifier for ambiguous transcripts
+ */
+export async function detectAgentWithAI(
+  transcript: string,
+  recentHistory: string[]
+): Promise<boolean> {
+  const context = recentHistory.slice(-3).join('\n');
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You detect if a live human agent (not IVR/bot) has answered a phone. Respond with only "YES" or "NO".\nYES = human said their name, greeted personally, asked how they can help.\nNO = automated menu, hold music narration, recorded message.',
+        },
+        {
+          role: 'user',
+          content: `Recent context:\n${context}\n\nNew transcript: "${transcript}"\n\nIs this a live human agent?`,
+        },
+      ],
+      max_tokens: 5,
+      temperature: 0,
+    });
+    const text = response.choices[0]?.message?.content?.trim().toUpperCase() ?? 'NO';
+    return text === 'YES';
+  } catch {
+    return false;
   }
 }
 

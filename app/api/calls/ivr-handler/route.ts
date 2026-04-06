@@ -3,10 +3,10 @@ import sql from '@/lib/db';
 
 const XML = { headers: { 'Content-Type': 'text/xml' } };
 
-function getStreamUrl(baseUrl: string, callId: string): string {
+function getStreamUrl(baseUrl: string): string {
   // Convert https:// to wss:// for WebSocket
   const wsBase = baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
-  return `${wsBase}/media-stream?callId=${callId}`;
+  return `${wsBase}/media-stream`;
 }
 
 export async function POST(req: NextRequest) {
@@ -33,14 +33,17 @@ export async function POST(req: NextRequest) {
   `;
 
   const baseUrl = (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? 'http://localhost:3003').replace(/\/$/, '');
-  const streamUrl = getStreamUrl(baseUrl, callId);
+  const streamUrl = getStreamUrl(baseUrl);
 
-  // Stream audio to our WebSocket AI navigator from the very start
+  // Bidirectional stream: we receive IVR audio AND can inject OpenAI TTS audio back.
+  // <Connect> keeps the call alive while the stream is active (no <Pause> needed).
+  // Note: callId passed as <Parameter> because Cloudflare strips URL query strings from WebSocket connections.
   const twiml = `<Response>
-  <Start>
-    <Stream url="${streamUrl}"/>
-  </Start>
-  <Pause length="3600"/>
+  <Connect>
+    <Stream url="${streamUrl}" bidirectional="true">
+      <Parameter name="callId" value="${callId}"/>
+    </Stream>
+  </Connect>
 </Response>`;
 
   return new NextResponse(twiml, XML);

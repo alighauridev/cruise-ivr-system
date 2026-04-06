@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface Call {
   id: string;
@@ -14,6 +14,7 @@ interface Call {
   agent_detected_time: string | null;
   error_message: string | null;
   recording_url: string | null;
+  transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -44,6 +45,7 @@ export default function CallLogsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -56,6 +58,10 @@ export default function CallLogsPage() {
   };
 
   useEffect(() => { load(); }, [statusFilter]);
+
+  const toggleTranscript = (callId: string) => {
+    setExpandedCallId(expandedCallId === callId ? null : callId);
+  };
 
   // Stats
   const total = calls.length;
@@ -143,39 +149,84 @@ export default function CallLogsPage() {
           <table className="w-full">
             <thead className="sticky top-0 bg-gray-950">
               <tr className="border-b border-gray-800">
-                {['Date', 'Cruise Line', 'Phone', 'Status', 'Hold Time', 'Total Duration', 'Recording'].map((h) => (
-                  <th key={h} className="text-left text-xs text-gray-500 uppercase tracking-wider px-6 py-3">{h}</th>
+                {['', 'Date', 'Cruise Line', 'Phone', 'Status', 'Hold Time', 'Duration', 'Recording'].map((h) => (
+                  <th key={h} className="text-left text-xs text-gray-500 uppercase tracking-wider px-4 py-3">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {calls.map((call) => (
-                <tr key={call.id} className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors">
-                  <td className="px-6 py-4 text-sm text-gray-400">{fmtDate(call.created_at)}</td>
-                  <td className="px-6 py-4 text-sm font-medium text-white">{call.lead_name ?? '—'}</td>
-                  <td className="px-6 py-4 text-sm text-gray-400 font-mono">{call.cruise_line_number ?? '—'}</td>
-                  <td className="px-6 py-4">
-                    <span className={`text-xs px-2.5 py-1 rounded-full border ${STATUS_BADGE[call.status] ?? 'bg-gray-800 text-gray-400 border-gray-700'}`}>
-                      {call.status.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-400">{fmt(call.hold_duration_seconds)}</td>
-                  <td className="px-6 py-4 text-sm text-gray-400">{fmt(call.total_duration_seconds)}</td>
-                  <td className="px-6 py-4">
-                    {call.recording_url ? (
-                      <div className="flex items-center gap-2">
-                        <audio controls src={call.recording_url} className="h-8 w-44" style={{ accentColor: '#3b82f6' }} />
-                        <a href={call.recording_url} download target="_blank" rel="noreferrer" className="text-gray-500 hover:text-white transition-colors" title="Download">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                          </svg>
-                        </a>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-gray-600">—</span>
-                    )}
-                  </td>
-                </tr>
+                <React.Fragment key={call.id}>
+                  <tr className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors cursor-pointer" onClick={() => toggleTranscript(call.id)}>
+                    <td className="px-4 py-4 text-gray-500">
+                      <svg className={`w-4 h-4 transition-transform ${expandedCallId === call.id ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmtDate(call.created_at)}</td>
+                    <td className="px-4 py-4 text-sm font-medium text-white">{call.lead_name ?? '—'}</td>
+                    <td className="px-4 py-4 text-sm text-gray-400 font-mono">{call.cruise_line_number ?? '—'}</td>
+                    <td className="px-4 py-4">
+                      <span className={`text-xs px-2.5 py-1 rounded-full border ${STATUS_BADGE[call.status] ?? 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+                        {call.status.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmt(call.hold_duration_seconds)}</td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmt(call.total_duration_seconds)}</td>
+                    <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
+                      {call.recording_url ? (
+                        <div className="flex items-center gap-2">
+                          <audio controls src={`/api/calls/${call.id}/recording`} className="h-8 w-44" style={{ accentColor: '#3b82f6' }} preload="none" />
+                          <a href={`/api/calls/${call.id}/recording`} download target="_blank" rel="noreferrer" className="text-gray-500 hover:text-white transition-colors" title="Download">
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          </a>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {expandedCallId === call.id && (
+                    <tr key={`${call.id}-transcript`} className="border-b border-gray-800/50">
+                      <td colSpan={8} className="px-4 py-0">
+                        <div className="bg-gray-900/80 rounded-xl border border-gray-800 my-2 p-4 max-h-96 overflow-y-auto">
+                          <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-3 font-semibold">Call Transcript</h4>
+                          {call.transcript?.utterances && call.transcript.utterances.length > 0 ? (
+                            <div className="space-y-2">
+                              {call.transcript.utterances.map((u, i) => (
+                                <div key={i} className="flex gap-3 text-sm">
+                                  <span className="text-gray-600 text-xs font-mono shrink-0 mt-1 w-14 text-right">
+                                    {Math.floor(u.start / 60)}:{String(Math.floor(u.start % 60)).padStart(2, '0')}
+                                  </span>
+                                  <div className={`rounded-lg px-3 py-2 max-w-[80%] ${
+                                    u.speaker === 0
+                                      ? 'bg-blue-900/30 border border-blue-800/50 text-blue-200'
+                                      : 'bg-gray-800/50 border border-gray-700/50 text-gray-200'
+                                  }`}>
+                                    <span className="text-xs font-semibold block mb-0.5 opacity-60">
+                                      {u.speaker === 0 ? 'IVR / Agent' : 'Our System'}
+                                    </span>
+                                    {u.text}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : call.transcript?.text ? (
+                            <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{call.transcript.text}</p>
+                          ) : call.transcript ? (
+                            <p className="text-gray-600 text-sm">Recording too short — no speech detected.</p>
+                          ) : (
+                            <p className="text-gray-600 text-sm">
+                              {call.recording_url ? 'Transcript processing...' : 'No recording available for this call.'}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

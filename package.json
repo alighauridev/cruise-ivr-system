@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "ts-node --project tsconfig.server.json -r tsconfig-paths/register server.ts",
+    "start:dev": "ts-node --project tsconfig.server.json -r tsconfig-paths/register start.ts",
     "dev:next": "next dev -p 3003",
-    "build": "next build",
-    "start": "next start",
+    "build": "next build && tsc --project tsconfig.server.json",
+    "start": "node -r ./.server-dist/_path-register.js .server-dist/server.js",
     "lint": "eslint"
   },
   "dependencies": {

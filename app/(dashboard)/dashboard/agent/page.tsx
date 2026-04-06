@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface Lead {
   id: string;
@@ -80,7 +80,7 @@ export default function AgentPage() {
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [events, setEvents] = useState<CallEvent[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const esRef = useRef<EventSource | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -91,34 +91,68 @@ export default function AgentPage() {
       .then((d) => setLeads(d.leads ?? []));
   }, []);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    if (timerRef.current) clearInterval(timerRef.current);
+  // Cleanup SSE on unmount
+  useEffect(() => {
+    return () => {
+      esRef.current?.close();
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
-  const pollCallStatus = useCallback(
-    (callId: string) => {
-      pollRef.current = setInterval(async () => {
-        const res = await fetch(`/api/calls/events?callId=${callId}`);
-        if (!res.ok) return;
-        const data = await res.json();
+  const stopStreaming = () => {
+    esRef.current?.close();
+    esRef.current = null;
+    if (timerRef.current) clearInterval(timerRef.current);
+  };
 
-        if (data.call) {
-          setActiveCall((prev) =>
-            prev ? { ...prev, status: data.call.status, holdSeconds: data.call.hold_duration_seconds ?? 0 } : prev
-          );
-          if (['completed', 'failed', 'cancelled'].includes(data.call.status)) {
-            stopPolling();
-            setTimeout(() => setActiveCall(null), 4000);
-          }
-        }
+  const startSSE = (callId: string) => {
+    if (esRef.current) esRef.current.close();
+    const es = new EventSource(`/api/calls/events?callId=${callId}`);
+    esRef.current = es;
+    const TERMINAL = ['completed', 'failed', 'cancelled'];
+    let done = false;
 
-        setEvents(data.events ?? []);
-        setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-      }, 2000);
-    },
-    [stopPolling]
-  );
+    const updateCall = (callData: Record<string, unknown> | null) => {
+      if (!callData) return;
+      setActiveCall((prev) =>
+        prev ? { ...prev, status: callData.status as string, holdSeconds: (callData.hold_duration_seconds as number) ?? 0 } : prev
+      );
+      if (TERMINAL.includes(callData.status as string) && !done) {
+        done = true;
+        es.close();
+        setTimeout(() => setActiveCall(null), 4000);
+      }
+    };
+
+    es.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === 'snapshot') {
+        // Replace entire event list (deduplicates on reconnect)
+        setEvents(msg.events ?? []);
+        updateCall(msg.call);
+      }
+
+      if (msg.type === 'event') {
+        // Deduplicate by event ID before appending
+        setEvents((prev) => {
+          if (prev.some((ev) => ev.id === msg.event.id)) return prev;
+          return [...prev, msg.event];
+        });
+        updateCall(msg.call);
+      }
+
+      if (msg.type === 'status') {
+        updateCall(msg.call);
+      }
+
+      setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    };
+
+    es.onerror = () => {
+      if (done) es.close(); // Don't reconnect after call ends
+    };
+  };
 
   async function handlePlaceCall() {
     if (!selectedLead) return;
@@ -152,7 +186,7 @@ export default function AgentPage() {
 
     // Start elapsed timer
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    pollCallStatus(data.callId);
+    startSSE(data.callId);
   }
 
   async function handleEndCall() {
@@ -162,7 +196,7 @@ export default function AgentPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ callId: activeCall.callId }),
     });
-    stopPolling();
+    stopStreaming();
     setActiveCall((prev) => (prev ? { ...prev, status: 'cancelled' } : null));
     setTimeout(() => setActiveCall(null), 2000);
   }
@@ -438,33 +472,61 @@ export default function AgentPage() {
                   );
                 }
 
-                // System action events
+                if (ev.event_type === 'twilio_status') return null;
+
+                // IVR step events
+                const stepMatch = ev.event_type.match(/^ivr_step_(\d+)$/);
+                if (stepMatch) {
+                  const d = ev.details as Record<string, Record<string, string>>;
+                  const desc = d?.step?.description ?? `Step ${stepMatch[1]}`;
+                  const type = d?.step?.type ?? '';
+                  const typeIcon: Record<string, string> = { wait: '⏱', dtmf: '🔢', voice: '🗣', hold: '⏳' };
+                  return (
+                    <div key={ev.id} className="flex gap-2 items-start text-xs text-blue-400">
+                      <span className="flex-shrink-0 text-gray-600">{time}</span>
+                      <span>{typeIcon[type] ?? '▸'} {desc}</span>
+                    </div>
+                  );
+                }
+
+                // AI action events
+                if (ev.event_type === 'ai_action') {
+                  const d = ev.details as Record<string, string>;
+                  const label = d.action === 'PRESS'
+                    ? `Pressed ${d.digit}`
+                    : d.action === 'SAY'
+                    ? `Said: "${d.phrase}"`
+                    : d.action ?? 'action';
+                  return (
+                    <div key={ev.id} className="flex gap-2 items-start text-xs text-purple-400">
+                      <span className="flex-shrink-0 text-gray-600">{time}</span>
+                      <span>▸ {label}</span>
+                    </div>
+                  );
+                }
+
                 const icons: Record<string, string> = {
                   call_initiated: '📞',
-                  hold_started: '⏳',
+                  entered_hold: '⏳',
                   agent_detected: '🟢',
                   transfer_initiated: '🔀',
                   call_ended_by_user: '🔴',
+                  voicemail_detected: '📬',
+                  max_duration_exceeded: '⏰',
                 };
                 const colors: Record<string, string> = {
                   call_initiated: 'text-blue-400',
-                  hold_started: 'text-orange-400',
+                  entered_hold: 'text-orange-400',
                   agent_detected: 'text-green-400',
                   transfer_initiated: 'text-cyan-400',
-                  twilio_status: 'text-gray-600',
+                  voicemail_detected: 'text-yellow-500',
+                  max_duration_exceeded: 'text-red-400',
                 };
-
-                if (ev.event_type === 'twilio_status') return null;
-
-                const stepMatch = ev.event_type.match(/^ivr_step_(\d+)$/);
-                const stepLabel = stepMatch
-                  ? `Step ${stepMatch[1]}: ${(ev.details as Record<string, Record<string, string>>).step?.description ?? ev.event_type}`
-                  : null;
 
                 return (
                   <div key={ev.id} className={`flex gap-2 items-start text-xs ${colors[ev.event_type] ?? 'text-gray-500'}`}>
                     <span className="flex-shrink-0 text-gray-600">{time}</span>
-                    <span>{icons[ev.event_type] ?? '▸'} {stepLabel ?? ev.event_type.replace(/_/g, ' ')}</span>
+                    <span>{icons[ev.event_type] ?? '▸'} {ev.event_type.replace(/_/g, ' ')}</span>
                   </div>
                 );
               })
