@@ -214,7 +214,7 @@ export default function LeadsPage() {
                   Import CSV
                 </button>
                 <button
-                  onClick={() => { setEditingLead(null); setLeadForm({ name: '', phone_number: '', category: '', notes: '' }); setShowLeadModal(true); }}
+                  onClick={() => { setEditingLead(null); setLeadForm({ name: '', phone_number: '', category: '', notes: '', ivr_config_id: '' }); setShowLeadModal(true); }}
                   className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
