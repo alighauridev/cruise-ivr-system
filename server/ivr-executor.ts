@@ -12,6 +12,7 @@ export class IVRExecutor {
   private currentIndex = 0;
   private mode: ExecutorMode = 'executing';
   private waitTimer: ReturnType<typeof setTimeout> | null = null;
+  private waitStepStartedAt = 0; // timestamp when current wait step began
   private onAction: (action: ExecutorAction) => Promise<void>;
   private onStepLog: (stepIndex: number, step: IVRStep) => Promise<void>;
 
@@ -38,13 +39,25 @@ export class IVRExecutor {
   onTranscript(transcript: string): void {
     if (this.mode !== 'executing') return;
     const step = this.steps[this.currentIndex];
-    if (!step) return;
+    if (!step || step.type !== 'wait' || !this.waitTimer) return;
 
-    // If we're waiting and IVR is still speaking, extend the wait
-    if (step.type === 'wait' && this.waitTimer) {
+    // Extend the wait only if the IVR spoke BEFORE the configured duration elapsed.
+    // This handles long IVR greetings (e.g., 46s intro before "How can I help?").
+    // Once the configured time has passed, the IVR is giving timeout prompts because
+    // we aren't responding — don't extend, let the timer fire so SPEAK can execute.
+    const elapsed = Date.now() - this.waitStepStartedAt;
+    const configuredMs = (step.duration_seconds ?? 3) * 1000;
+
+    if (elapsed < configuredMs) {
+      // IVR still giving its initial greeting — extend by 3.5s to let it finish
       clearTimeout(this.waitTimer);
-      this.scheduleWaitAdvance(step.duration_seconds ?? 3);
+      this.waitTimer = setTimeout(() => {
+        this.waitTimer = null;
+        this.executeStep(this.currentIndex + 1);
+      }, 3500);
     }
+    // If elapsed >= configuredMs: IVR is prompting because it heard silence from us.
+    // Do NOT extend — the timer will fire shortly and SPEAK will execute.
   }
 
   isInHoldMode(): boolean {
@@ -81,6 +94,7 @@ export class IVRExecutor {
     switch (step.type) {
       case 'wait': {
         const secs = step.duration_seconds ?? 3;
+        this.waitStepStartedAt = Date.now();
         this.scheduleWaitAdvance(secs);
         break;
       }
