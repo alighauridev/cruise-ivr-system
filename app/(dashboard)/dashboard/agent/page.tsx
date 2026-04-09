@@ -210,11 +210,12 @@ export default function AgentPage() {
       }),
     });
 
-    const data = await res.json();
+    let data: Record<string, string> = {};
+    try { data = await res.json(); } catch { /* empty body on 500 */ }
     setCallLoading(false);
 
     if (!res.ok) {
-      setError(data.error ?? 'Failed to initiate call');
+      setError(data.error ?? `Server error (${res.status}) — check your internet connection`);
       return;
     }
 
