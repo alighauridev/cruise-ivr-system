@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { leadId, transferNumber } = await req.json();
+  const { leadId, transferNumber, ivrConfigId } = await req.json();
   if (!leadId) {
     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
   }
@@ -27,6 +27,19 @@ export async function POST(req: NextRequest) {
   }
 
   const lead = leads[0];
+
+  // If a specific IVR config was selected, fetch its steps
+  let ivrSteps = lead.steps;
+  let resolvedIvrConfigId = lead.ivr_config_id as string | null;
+  if (ivrConfigId && ivrConfigId !== lead.ivr_config_id) {
+    const cfgRows = await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} AND user_id = ${session.user.id} LIMIT 1`;
+    if (cfgRows.length > 0) {
+      ivrSteps = cfgRows[0].steps;
+      resolvedIvrConfigId = cfgRows[0].id as string;
+    }
+  }
+
+  // transferNumber from request > user's default transfer_phone > env fallback
   const xferNumber = transferNumber ?? process.env.DEFAULT_TRANSFER_NUMBER;
 
   // Normalize to E.164 — strip dashes/spaces/parens, add +1 if US number
@@ -40,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   const callRows = await sql`
     INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id)
-    VALUES (${session.user.id}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${lead.ivr_config_id as string | null})
+    VALUES (${session.user.id}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId})
     RETURNING id
   `;
   const callId = callRows[0].id as string;

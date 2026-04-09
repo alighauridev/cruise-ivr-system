@@ -11,6 +11,19 @@ interface Lead {
   ivr_config_id: string | null;
 }
 
+interface IVRConfig {
+  id: string;
+  name: string;
+  lead_name: string | null;
+}
+
+interface TransferNumber {
+  id: string;
+  name: string;
+  phone: string;
+  isDefault: boolean;
+}
+
 interface ActiveCall {
   callId: string;
   twilioSid: string;
@@ -73,7 +86,11 @@ function formatDuration(seconds: number): string {
 
 export default function AgentPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [ivrConfigs, setIvrConfigs] = useState<IVRConfig[]>([]);
+  const [transferNumbers, setTransferNumbers] = useState<TransferNumber[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [selectedIvrConfigId, setSelectedIvrConfigId] = useState<string>('');
+  const [selectedTransferNumberId, setSelectedTransferNumberId] = useState<string>('');
   const [search, setSearch] = useState('');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
@@ -84,11 +101,26 @@ export default function AgentPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // Load leads
+  // Load leads, IVR configs, and transfer numbers
   useEffect(() => {
     fetch('/api/leads')
       .then((r) => r.json())
       .then((d) => setLeads(d.leads ?? []));
+    fetch('/api/ivr-configs')
+      .then((r) => r.json())
+      .then((d) => setIvrConfigs(d.configs ?? []));
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((d) => {
+        const nums: TransferNumber[] = d.user?.transfer_numbers ?? [];
+        if (nums.length === 0 && d.user?.transfer_phone) {
+          setTransferNumbers([{ id: 'default', name: 'Default', phone: d.user.transfer_phone, isDefault: true }]);
+        } else {
+          setTransferNumbers(nums);
+        }
+        const def = nums.find((n: TransferNumber) => n.isDefault) ?? nums[0];
+        if (def) setSelectedTransferNumberId(def.id);
+      });
   }, []);
 
   // Cleanup SSE on unmount
@@ -154,6 +186,12 @@ export default function AgentPage() {
     };
   };
 
+  function handleSelectLead(lead: Lead) {
+    setSelectedLead(lead);
+    // Auto-select the lead's IVR config if it has one
+    setSelectedIvrConfigId(lead.ivr_config_id ?? '');
+  }
+
   async function handlePlaceCall() {
     if (!selectedLead) return;
     setCallLoading(true);
@@ -161,10 +199,15 @@ export default function AgentPage() {
     setElapsed(0);
     setEvents([]);
 
+    const selectedTransferNumber = transferNumbers.find((n) => n.id === selectedTransferNumberId);
     const res = await fetch('/api/calls/initiate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId: selectedLead.id }),
+      body: JSON.stringify({
+        leadId: selectedLead.id,
+        ivrConfigId: selectedIvrConfigId || undefined,
+        transferNumber: selectedTransferNumber?.phone,
+      }),
     });
 
     const data = await res.json();
@@ -255,7 +298,7 @@ export default function AgentPage() {
                 filteredLeads.map((lead) => (
                   <button
                     key={lead.id}
-                    onClick={() => setSelectedLead(lead)}
+                    onClick={() => handleSelectLead(lead)}
                     disabled={!!isLiveStatus}
                     className={`w-full text-left px-4 py-3.5 border-b border-gray-800 last:border-0 transition-colors ${
                       selectedLead?.id === lead.id
@@ -281,18 +324,54 @@ export default function AgentPage() {
             </div>
           </div>
 
-          {/* Selected lead info */}
+          {/* Selected lead info + config selectors */}
           {selectedLead && !isLiveStatus && (
-            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Selected</p>
-              <p className="text-white font-semibold">{selectedLead.name}</p>
-              <p className="text-gray-400 text-sm">{selectedLead.phone_number}</p>
-              {selectedLead.category && (
-                <p className="text-gray-500 text-xs mt-1">{selectedLead.category}</p>
+            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 space-y-3">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Selected</p>
+                <p className="text-white font-semibold">{selectedLead.name}</p>
+                <p className="text-gray-400 text-sm">{selectedLead.phone_number}</p>
+                {selectedLead.category && (
+                  <p className="text-gray-500 text-xs mt-0.5">{selectedLead.category}</p>
+                )}
+              </div>
+
+              {/* IVR Config selector */}
+              {ivrConfigs.length > 0 && (
+                <div>
+                  <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">IVR Script</label>
+                  <select
+                    value={selectedIvrConfigId}
+                    onChange={(e) => setSelectedIvrConfigId(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="">— No IVR (hold detection only) —</option>
+                    {ivrConfigs.map((cfg) => (
+                      <option key={cfg.id} value={cfg.id}>{cfg.name}</option>
+                    ))}
+                  </select>
+                </div>
               )}
-              {!selectedLead.ivr_config_id && (
-                <p className="text-yellow-500 text-xs mt-2">
-                  No IVR config — will go straight to hold detection.
+
+              {/* Transfer number selector */}
+              {transferNumbers.length > 1 && (
+                <div>
+                  <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">Transfer To</label>
+                  <select
+                    value={selectedTransferNumberId}
+                    onChange={(e) => setSelectedTransferNumberId(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  >
+                    {transferNumbers.map((n) => (
+                      <option key={n.id} value={n.id}>{n.name} — {n.phone}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {!selectedIvrConfigId && (
+                <p className="text-yellow-500 text-xs">
+                  No IVR script selected — will go straight to hold detection.
                 </p>
               )}
             </div>

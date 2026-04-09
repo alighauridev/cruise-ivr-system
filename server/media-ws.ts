@@ -555,7 +555,7 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
 
   try {
     const rows = await sql`
-      SELECT c.*, u.notification_phone
+      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
       FROM calls c
       JOIN users u ON u.id = c.user_id
       WHERE c.id = ${state.callId}
@@ -584,10 +584,11 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     `;
 
     if (state.callSid) {
-      // Tell the agent to hold — prevents them from hanging up while we connect the customer.
-      // Loop the message every 30s so they know someone is coming.
+      const connectMsg = (call.connect_message as string | null) ||
+        'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
+      const escapedMsg = connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       await twilioClient.calls(state.callSid).update({
-        twiml: `<Response><Say voice="Polly.Joanna">Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.</Say><Pause length="25"/><Say voice="Polly.Joanna">We are still connecting you. Please hold.</Say><Pause length="25"/><Say voice="Polly.Joanna">Thank you for waiting. Our customer will be with you shortly.</Say><Pause length="3600"/></Response>`,
+        twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Pause length="25"/><Say voice="Polly.Joanna">We are still connecting you. Please hold.</Say><Pause length="25"/><Say voice="Polly.Joanna">Thank you for waiting. Our customer will be with you shortly.</Say><Pause length="3600"/></Response>`,
       });
     }
 
@@ -596,8 +597,13 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
       await notifyAgentDetected(state.callId, call.notification_phone as string, baseUrl);
     }
 
-    // Auto-callback: check if user has auto_callback_enabled, then auto-bridge
-    const transferNumber = call.transfer_number as string | null;
+    // Auto-callback: resolve transfer number then check setting
+    let transferNumber = call.transfer_number as string | null;
+    if (!transferNumber) {
+      const nums = (call.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
+      const defaultNum = nums.find((n) => n.isDefault) ?? nums[0];
+      transferNumber = defaultNum?.phone ?? null;
+    }
     if (transferNumber) {
       const autoSetting = await sql`
         SELECT value FROM settings WHERE user_id = ${call.user_id as string} AND key = 'auto_callback_enabled' LIMIT 1

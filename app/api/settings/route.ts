@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -18,14 +19,16 @@ export async function PUT(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { transfer_phone, notification_preference, notification_phone, settings } = await req.json();
+  const { transfer_phone, notification_preference, notification_phone, settings, transfer_numbers, connect_message } = await req.json();
 
   await sql`
     UPDATE users
-    SET transfer_phone = ${transfer_phone ?? null},
+    SET transfer_phone          = ${transfer_phone ?? null},
         notification_preference = ${notification_preference ?? 'sms'},
-        notification_phone = ${notification_phone ?? null},
-        updated_at = NOW()
+        notification_phone      = ${notification_phone ?? null},
+        transfer_numbers        = ${JSON.stringify(transfer_numbers ?? [])}::jsonb,
+        connect_message         = ${connect_message ?? null},
+        updated_at              = NOW()
     WHERE id = ${session.user.id}
   `;
 

@@ -3,19 +3,25 @@ import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
 import { twilioClient, twilioPhone } from '@/lib/twilio';
 
+const DEFAULT_CONNECT_MESSAGE = "Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.";
+
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { callId } = await req.json();
+  const { callId, transferNumberPhone } = await req.json();
   if (!callId) {
     return NextResponse.json({ error: 'callId required' }, { status: 400 });
   }
 
   const rows = await sql`
-    SELECT * FROM calls WHERE id = ${callId} AND user_id = ${session.user.id} LIMIT 1
+    SELECT c.*, u.connect_message, u.transfer_numbers
+    FROM calls c
+    JOIN users u ON u.id = c.user_id
+    WHERE c.id = ${callId} AND c.user_id = ${session.user.id}
+    LIMIT 1
   `;
 
   if (rows.length === 0) {
@@ -28,14 +34,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Cannot transfer call in status: ${call.status}` }, { status: 400 });
   }
 
+  // Resolve transfer number: request override > call's stored number > default from transfer_numbers
+  let transferNumber = transferNumberPhone ?? call.transfer_number as string | null;
+  if (!transferNumber) {
+    const nums = (call.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
+    const defaultNum = nums.find((n) => n.isDefault) ?? nums[0];
+    transferNumber = defaultNum?.phone ?? null;
+  }
+
+  if (!transferNumber) {
+    return NextResponse.json({ error: 'No transfer number configured' }, { status: 400 });
+  }
+
+  const connectMessage = (call.connect_message as string | null) || DEFAULT_CONNECT_MESSAGE;
+
   try {
-    const transferNumber = call.transfer_number as string;
     const baseUrl = (process.env.PUBLIC_URL ?? process.env.NEXTAUTH_URL ?? 'http://localhost:3003');
     const conferenceRoom = `CruisePro-${callId}`;
 
-    // Move cruise line call into conference
+    // Move cruise line agent into conference with custom hold message
     await twilioClient.calls(call.twilio_call_sid as string).update({
       twiml: `<Response>
+  <Say voice="Polly.Joanna">${escapeXml(connectMessage)}</Say>
   <Dial>
     <Conference>${conferenceRoom}</Conference>
   </Dial>
@@ -56,10 +76,7 @@ export async function POST(req: NextRequest) {
       statusCallbackMethod: 'POST',
     });
 
-    await sql`
-      UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${callId}
-    `;
-
+    await sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${callId}`;
     await sql`
       INSERT INTO call_events (call_id, event_type, details)
       VALUES (${callId}, 'transfer_initiated', ${JSON.stringify({ transferNumber, conferenceRoom })})
@@ -70,4 +87,8 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+function escapeXml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
