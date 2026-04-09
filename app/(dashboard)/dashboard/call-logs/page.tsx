@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useUserView } from '@/lib/user-view-context';
 
 interface Call {
   id: string;
@@ -46,18 +47,20 @@ export default function CallLogsPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const { viewAsId, viewAsUser } = useUserView();
 
   const load = async () => {
     setLoading(true);
     const params = new URLSearchParams({ limit: '100' });
     if (statusFilter) params.set('status', statusFilter);
+    if (viewAsId) params.set('viewAs', viewAsId);
     const r = await fetch(`/api/calls?${params}`);
     const d = await r.json();
     setCalls(d.calls ?? []);
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { load(); }, [statusFilter, viewAsId]);
 
   const toggleTranscript = (callId: string) => {
     setExpandedCallId(expandedCallId === callId ? null : callId);
@@ -84,6 +87,14 @@ export default function CallLogsPage() {
 
   return (
     <div className="h-full flex flex-col">
+      {viewAsUser && (
+        <div className="px-8 py-2.5 bg-purple-900/20 border-b border-purple-800/40 flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-purple-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+            {viewAsUser.name.charAt(0).toUpperCase()}
+          </div>
+          <p className="text-sm text-purple-300">Viewing as <span className="font-semibold">{viewAsUser.name}</span></p>
+        </div>
+      )}
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Call Logs</h1>

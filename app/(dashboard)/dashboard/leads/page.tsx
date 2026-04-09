@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useUserView } from '@/lib/user-view-context';
 
 interface Directory {
   id: string;
@@ -26,6 +27,7 @@ interface IVRConfig {
 }
 
 export default function LeadsPage() {
+  const { viewAsId, viewAsUser } = useUserView();
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [ivrConfigs, setIvrConfigs] = useState<IVRConfig[]>([]);
@@ -40,10 +42,13 @@ export default function LeadsPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadDirectories = async () => {
-    const r = await fetch('/api/directories');
+    const params = new URLSearchParams();
+    if (viewAsId) params.set('viewAs', viewAsId);
+    const r = await fetch(`/api/directories?${params}`);
     const d = await r.json();
     setDirectories(d.directories ?? []);
-    if (d.directories?.length > 0 && !selectedDir) {
+    setSelectedDir('');
+    if (d.directories?.length > 0) {
       setSelectedDir(d.directories[0].id);
     }
   };
@@ -52,6 +57,7 @@ export default function LeadsPage() {
     const params = new URLSearchParams();
     if (selectedDir) params.set('directoryId', selectedDir);
     if (search) params.set('search', search);
+    if (viewAsId) params.set('viewAs', viewAsId);
     const r = await fetch(`/api/leads?${params}`);
     const d = await r.json();
     setLeads(d.leads ?? []);
@@ -60,7 +66,7 @@ export default function LeadsPage() {
   useEffect(() => {
     loadDirectories();
     fetch('/api/ivr-configs').then(r => r.json()).then(d => setIvrConfigs(d.configs ?? []));
-  }, []);
+  }, [viewAsId]);
   useEffect(() => { if (selectedDir || search) loadLeads(); }, [selectedDir, search]);
 
   async function saveDirectory() {
@@ -146,11 +152,20 @@ export default function LeadsPage() {
 
   return (
     <div className="h-full flex flex-col">
+      {viewAsUser && (
+        <div className="px-8 py-2.5 bg-purple-900/20 border-b border-purple-800/40 flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-purple-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+            {viewAsUser.name.charAt(0).toUpperCase()}
+          </div>
+          <p className="text-sm text-purple-300">Viewing as <span className="font-semibold">{viewAsUser.name}</span> — read-only</p>
+        </div>
+      )}
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Leads</h1>
           <p className="text-gray-400 text-sm mt-1">Manage cruise line directories and contacts</p>
         </div>
+        {!viewAsUser && (
         <button
           onClick={() => setShowDirModal(true)}
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
@@ -160,6 +175,7 @@ export default function LeadsPage() {
           </svg>
           New Directory
         </button>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -178,14 +194,16 @@ export default function LeadsPage() {
                   <p className="text-sm font-medium truncate">{dir.name}</p>
                   <p className="text-xs opacity-70">{dir.lead_count} leads</p>
                 </button>
-                <button
-                  onClick={() => deleteDirectory(dir.id)}
-                  className="absolute right-2 top-2.5 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 transition-opacity"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                </button>
+                {!viewAsUser && (
+                  <button
+                    onClick={() => deleteDirectory(dir.id)}
+                    className="absolute right-2 top-2.5 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 transition-opacity"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -203,6 +221,8 @@ export default function LeadsPage() {
                   onChange={(e) => setSearch(e.target.value)}
                   className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
+                {!viewAsUser && (
+                <>
                 <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleCSVUpload} className="hidden" />
                 <button
                   onClick={() => fileRef.current?.click()}
@@ -222,6 +242,8 @@ export default function LeadsPage() {
                   </svg>
                   Add Lead
                 </button>
+                </>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto">
@@ -266,6 +288,7 @@ export default function LeadsPage() {
                             )}
                           </td>
                           <td className="px-6 py-4">
+                            {!viewAsUser && (
                             <div className="flex items-center gap-2 justify-end">
                               <button onClick={() => openEditLead(lead)} className="text-gray-500 hover:text-blue-400 transition-colors">
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -278,6 +301,7 @@ export default function LeadsPage() {
                                 </svg>
                               </button>
                             </div>
+                            )}
                           </td>
                         </tr>
                       ))}

@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { signOut } from 'next-auth/react';
+import UserPicker from '@/components/UserPicker';
 
 interface SidebarProps {
-  user: { name?: string | null; email?: string | null };
+  user: { id?: string; name?: string | null; email?: string | null };
 }
 
 const navItems = [
@@ -59,6 +60,7 @@ const navItems = [
 
 export default function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname();
+  const currentUserId = user.id ?? '';
 
   return (
     <aside className="w-64 flex flex-col bg-gray-900 border-r border-gray-800 h-full">
@@ -97,6 +99,9 @@ export default function Sidebar({ user }: SidebarProps) {
           );
         })}
       </nav>
+
+      {/* User switcher */}
+      <UserPicker currentUserId={currentUserId} />
 
       {/* User footer */}
       <div className="px-4 py-4 border-t border-gray-800">

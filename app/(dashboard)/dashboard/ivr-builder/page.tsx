@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import type { IVRStep, IVRStepType } from '@/lib/ivr-engine';
+import { useUserView } from '@/lib/user-view-context';
 
 interface IVRConfig {
   id: string;
@@ -32,6 +33,7 @@ const DEFAULT_CRUISE_IVR_STEPS: IVRStep[] = [
 ];
 
 export default function IVRBuilderPage() {
+  const { viewAsId, viewAsUser } = useUserView();
   const [configs, setConfigs] = useState<IVRConfig[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedConfig, setSelectedConfig] = useState<IVRConfig | null>(null);
@@ -43,18 +45,23 @@ export default function IVRBuilderPage() {
   const [saved, setSaved] = useState(false);
 
   const loadConfigs = async () => {
-    const r = await fetch('/api/ivr-configs');
+    const params = viewAsId ? `?viewAs=${viewAsId}` : '';
+    const r = await fetch(`/api/ivr-configs${params}`);
     const d = await r.json();
     setConfigs(d.configs ?? []);
+    setSelectedConfig(null);
+    setShowNew(false);
+    setSteps([]);
   };
 
   const loadLeads = async () => {
-    const r = await fetch('/api/leads');
+    const params = viewAsId ? `?viewAs=${viewAsId}` : '';
+    const r = await fetch(`/api/leads${params}`);
     const d = await r.json();
     setLeads(d.leads ?? []);
   };
 
-  useEffect(() => { loadConfigs(); loadLeads(); }, []);
+  useEffect(() => { loadConfigs(); loadLeads(); }, [viewAsId]);
 
   function selectConfig(cfg: IVRConfig) {
     setSelectedConfig(cfg);
@@ -146,11 +153,20 @@ export default function IVRBuilderPage() {
 
   return (
     <div className="h-full flex flex-col">
+      {viewAsUser && (
+        <div className="px-8 py-2.5 bg-purple-900/20 border-b border-purple-800/40 flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-purple-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+            {viewAsUser.name.charAt(0).toUpperCase()}
+          </div>
+          <p className="text-sm text-purple-300">Viewing as <span className="font-semibold">{viewAsUser.name}</span> — read-only</p>
+        </div>
+      )}
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">IVR Builder</h1>
           <p className="text-gray-400 text-sm mt-1">Configure IVR navigation flows per cruise line</p>
         </div>
+        {!viewAsUser && (
         <button
           onClick={startNew}
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
@@ -160,6 +176,7 @@ export default function IVRBuilderPage() {
           </svg>
           New Config
         </button>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -214,6 +231,7 @@ export default function IVRBuilderPage() {
                     ))}
                   </select>
                 )}
+                {!viewAsUser && (
                 <div className="flex items-center gap-2">
                   {selectedConfig && (
                     <button
@@ -238,6 +256,7 @@ export default function IVRBuilderPage() {
                     ) : saving ? 'Saving...' : 'Save Config'}
                   </button>
                 </div>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto p-6">

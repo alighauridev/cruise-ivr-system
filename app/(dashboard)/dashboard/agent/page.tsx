@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useUserView } from '@/lib/user-view-context';
 
 interface Lead {
   id: string;
@@ -72,6 +73,7 @@ function formatDuration(seconds: number): string {
 }
 
 export default function AgentPage() {
+  const { viewAsId, viewAsUser } = useUserView();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [search, setSearch] = useState('');
@@ -86,10 +88,11 @@ export default function AgentPage() {
 
   // Load leads
   useEffect(() => {
-    fetch('/api/leads')
+    const params = viewAsId ? `?viewAs=${viewAsId}` : '';
+    fetch(`/api/leads${params}`)
       .then((r) => r.json())
       .then((d) => setLeads(d.leads ?? []));
-  }, []);
+  }, [viewAsId]);
 
   // Cleanup SSE on unmount
   useEffect(() => {
@@ -227,6 +230,14 @@ export default function AgentPage() {
 
   return (
     <div className="h-full flex flex-col">
+      {viewAsUser && (
+        <div className="px-8 py-2.5 bg-purple-900/20 border-b border-purple-800/40 flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-purple-700 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+            {viewAsUser.name.charAt(0).toUpperCase()}
+          </div>
+          <p className="text-sm text-purple-300">Viewing as <span className="font-semibold">{viewAsUser.name}</span></p>
+        </div>
+      )}
       {/* Header */}
       <div className="px-8 py-6 border-b border-gray-800">
         <h1 className="text-2xl font-bold text-white">Call Agent</h1>
