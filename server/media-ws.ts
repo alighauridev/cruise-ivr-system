@@ -583,9 +583,10 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
       VALUES (${state.callId}, 'agent_detected', ${JSON.stringify({ transcript })})
     `;
 
+    const connectMsg = (call.connect_message as string | null) ||
+      'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
+
     if (state.callSid) {
-      const connectMsg = (call.connect_message as string | null) ||
-        'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
       const escapedMsg = connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       await twilioClient.calls(state.callSid).update({
         twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Pause length="25"/><Say voice="Polly.Joanna">We are still connecting you. Please hold.</Say><Pause length="25"/><Say voice="Polly.Joanna">Thank you for waiting. Our customer will be with you shortly.</Say><Pause length="3600"/></Response>`,
@@ -610,7 +611,7 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
       `;
       if (autoSetting[0]?.value === 'true') {
         console.log(`[AI] Auto-callback enabled — bridging callId=${state.callId} to ${transferNumber}`);
-        await autoTransferToConference(state.callId, call.twilio_call_sid as string, transferNumber, baseUrl);
+        await autoTransferToConference(state.callId, call.twilio_call_sid as string, transferNumber, baseUrl, connectMsg);
       }
     }
   } catch (err) {
@@ -662,13 +663,14 @@ async function endCallMaxDuration(state: SessionState) {
  * Auto-transfer: bridge the cruise line call with the customer's phone via Twilio conference.
  * Same logic as /api/calls/transfer but triggered automatically on agent detection.
  */
-async function autoTransferToConference(callId: string, twilioCallSid: string, transferNumber: string, baseUrl: string) {
+async function autoTransferToConference(callId: string, twilioCallSid: string, transferNumber: string, baseUrl: string, connectMessage: string) {
   try {
     const conferenceRoom = `CruisePro-${callId}`;
+    const escapedMsg = connectMessage.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    // Move cruise line call into conference
+    // Play connect message to cruise agent, then bridge into conference
     await twilioClient.calls(twilioCallSid).update({
-      twiml: `<Response><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
+      twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Dial><Conference waitUrl="">${conferenceRoom}</Conference></Dial></Response>`,
     });
 
     // Call the customer and add them to the conference
