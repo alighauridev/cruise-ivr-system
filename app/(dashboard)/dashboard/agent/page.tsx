@@ -550,10 +550,10 @@ export default function AgentPage() {
                     { key: 'navigating_ivr', label: 'IVR Navigation' },
                     { key: 'on_hold', label: 'Waiting on Hold' },
                     { key: 'agent_detected', label: 'Agent Detected' },
-                    { key: 'ai_conversation', label: 'AI Conversation' },
+                    ...(aiTask.trim() ? [{ key: 'ai_conversation', label: 'AI Conversation' }] : []),
                     { key: 'connected', label: 'Customer Connected' },
                   ].map((step, i) => {
-                    const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', 'ai_conversation', 'connected', 'completed'];
+                    const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', ...(aiTask.trim() ? ['ai_conversation'] : []), 'connected', 'completed'];
                     const currentIdx = statusOrder.indexOf(activeCall.status);
                     const stepIdx = statusOrder.indexOf(step.key);
                     const done = currentIdx > stepIdx;
