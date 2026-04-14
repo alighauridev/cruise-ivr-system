@@ -108,6 +108,7 @@ export default function AgentPage() {
   const [convAiLoading, setConvAiLoading] = useState(false);
   const [keypadPressing, setKeypadPressing] = useState(false);
   const [keypadLastDigit, setKeypadLastDigit] = useState('');
+  const [latestIvrPrompt, setLatestIvrPrompt] = useState('');
   const esRef = useRef<EventSource | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -189,6 +190,12 @@ export default function AgentPage() {
           text: ((e.details as Record<string, string>).text) ?? '',
           timestamp: e.created_at,
         })));
+        // Restore latest IVR prompt from snapshot
+        const transcripts = (msg.events ?? []).filter((e: CallEvent) => e.event_type === 'transcript');
+        if (transcripts.length > 0) {
+          const last = transcripts[transcripts.length - 1] as CallEvent;
+          setLatestIvrPrompt(((last.details as Record<string, string>).text) ?? '');
+        }
       }
 
       if (msg.type === 'event') {
@@ -197,6 +204,11 @@ export default function AgentPage() {
           return [...prev, msg.event];
         });
         updateCall(msg.call);
+        // Track latest IVR transcript for keypad display
+        if (msg.event.event_type === 'transcript') {
+          const txt = ((msg.event.details as Record<string, string>).text) ?? '';
+          if (txt) setLatestIvrPrompt(txt);
+        }
         // Handle conversation events
         if (msg.event.event_type === 'conversation_transcript' || msg.event.event_type === 'conversation_ai_say') {
           const det = msg.event.details as Record<string, string>;
@@ -237,6 +249,8 @@ export default function AgentPage() {
     setElapsed(0);
     setEvents([]);
     setConvMessages([]);
+    setLatestIvrPrompt('');
+    setKeypadLastDigit('');
 
     const selectedTransferNumber = transferNumbers.find((n) => n.id === selectedTransferNumberId);
     const res = await fetch('/api/calls/initiate', {
@@ -588,6 +602,51 @@ export default function AgentPage() {
                   <p className="text-green-400/70 text-sm mt-1">
                     An SMS notification has been sent. Click Connect to bridge the call.
                   </p>
+                </div>
+              )}
+
+              {/* Manual DTMF keypad — visible during IVR navigation and hold */}
+              {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
+                <div className="bg-black/20 rounded-xl p-4 mb-4 space-y-3">
+                  <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Manual Keypad</p>
+
+                  {/* Live IVR prompt */}
+                  <div className="min-h-[56px] bg-gray-800/60 border border-gray-700/50 rounded-xl px-3 py-2.5">
+                    {latestIvrPrompt ? (
+                      <>
+                        <p className="text-xs text-gray-500 mb-1">IVR said:</p>
+                        <p className="text-sm text-gray-100 leading-snug">{latestIvrPrompt}</p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-600 italic mt-2 text-center">Waiting for IVR prompt...</p>
+                    )}
+                  </div>
+
+                  {/* Digit display */}
+                  <div className="text-center h-7">
+                    {keypadLastDigit && (
+                      <span className="text-xl font-mono font-bold text-blue-300 tracking-widest">{keypadLastDigit}</span>
+                    )}
+                  </div>
+
+                  {/* Key grid */}
+                  <div className="grid grid-cols-3 gap-2">
+                    {['1','2','3','4','5','6','7','8','9','*','0','#'].map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => handleKeypadPress(d)}
+                        disabled={keypadPressing}
+                        className={`py-3 rounded-xl text-sm font-semibold border transition-all active:scale-95 disabled:opacity-50 ${
+                          d === keypadLastDigit
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 hover:border-gray-600'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-600 text-center">Digit plays on call immediately</p>
                 </div>
               )}
 

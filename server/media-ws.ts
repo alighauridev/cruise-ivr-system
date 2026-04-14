@@ -773,54 +773,93 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
 
   console.log(`[AI] AGENT DETECTED callId=${state.callId}`);
 
-  // ── Step 1: Enter AI conversation mode in-memory immediately ─────────────
-  // Do this before any awaits so the Twilio stream stays alive.
-  state.aiConversationMode = true;
-  state.aiConversationHistory = [];
-  state.isConvSpeaking = false;
-  // aiTask will be fetched from DB below; keep null for now so RT can still start
-  state.aiTask = state.aiTask ?? null;
-
-  // ── Step 2: Reconnect Twilio stream + start OpenAI RT immediately ─────────
-  // These don't need DB data — fire them before any DB queries.
-  if (state.callSid) {
-    const streamUrl = STREAM_URL();
-    state.pendingRedirects++;
-    twilioClient.calls(state.callSid).update({
-      twiml: `<Response><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
-    }).then(() => {
-      console.log(`[AI] Entered ai_conversation mode callId=${state.callId}`);
-    }).catch((err) => {
-      console.error(`[AI] Twilio update error callId=${state.callId}:`, err);
-    });
+  // Fetch user/call data — needed to branch on ai_task and get notification_phone.
+  // This is a single fast query; done before anything else so the branch is correct.
+  let call: Record<string, unknown> | null = null;
+  try {
+    const rows = await sql`
+      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
+      FROM calls c
+      JOIN users u ON u.id = c.user_id
+      WHERE c.id = ${state.callId}
+      LIMIT 1
+    `;
+    if (rows.length === 0) return;
+    call = rows[0] as Record<string, unknown>;
+  } catch (err) {
+    console.error(`[AI] handleAgentDetected DB fetch error callId=${state.callId}:`, err);
+    // Can't determine ai_task — fall through to simple flow to be safe
   }
 
-  connectOpenAIRealtime(state).catch((err) =>
-    console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err)
-  );
+  const aiTask = (call?.ai_task as string | null) || null;
+  state.aiTask = aiTask;
 
-  // ── Step 3: DB updates in background — don't block the stream ────────────
+  // ── Branch: AI task set → AI conversation mode ────────────────────────────
+  if (aiTask) {
+    state.aiConversationMode = true;
+    state.aiConversationHistory = [];
+    state.isConvSpeaking = false;
+
+    // Fire Twilio stream reconnect + OpenAI RT immediately (no further DB blocking)
+    if (state.callSid) {
+      const streamUrl = STREAM_URL();
+      state.pendingRedirects++;
+      twilioClient.calls(state.callSid).update({
+        twiml: `<Response><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
+      }).then(() => {
+        console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${aiTask.substring(0, 40)}"`);
+      }).catch((err) => {
+        console.error(`[AI] Twilio update error callId=${state.callId}:`, err);
+      });
+    }
+
+    connectOpenAIRealtime(state).catch((err) =>
+      console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err)
+    );
+
+    // DB updates in background
+    (async () => {
+      try {
+        await sql`
+          UPDATE calls
+          SET status = 'ai_conversation',
+              agent_detected_time = NOW(),
+              hold_duration_seconds = CASE
+                WHEN hold_start_time IS NOT NULL
+                THEN EXTRACT(EPOCH FROM (NOW() - hold_start_time))::INTEGER
+                ELSE 0
+              END,
+              updated_at = NOW()
+          WHERE id = ${state.callId}
+        `;
+        await sql`
+          INSERT INTO call_events (call_id, event_type, details)
+          VALUES (${state.callId}, 'agent_detected', ${JSON.stringify({ transcript })})
+        `.catch(() => {});
+        const baseUrl = BASE_URL();
+        if (call?.notification_phone) {
+          await notifyAgentDetected(state.callId, call.notification_phone as string, baseUrl).catch(() => {});
+        }
+      } catch (err) {
+        console.error(`[AI] handleAgentDetected DB update error (non-fatal):`, err);
+      }
+    })();
+
+    return;
+  }
+
+  // ── Branch: No task → simple flow (agent_detected status, SMS, manual transfer) ──
+  console.log(`[AI] No task set — using simple connect flow callId=${state.callId}`);
+
+  const connectMsg = (call?.connect_message as string | null) ||
+    'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
+
+  // DB updates in background
   (async () => {
     try {
-      const rows = await sql`
-        SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
-        FROM calls c
-        JOIN users u ON u.id = c.user_id
-        WHERE c.id = ${state.callId}
-        LIMIT 1
-      `;
-
-      if (rows.length === 0) return;
-      const call = rows[0];
-
-      // Populate aiTask now that we have the DB row (RT will use it on next response)
-      if (!state.aiTask) {
-        state.aiTask = (call.ai_task as string | null) || null;
-      }
-
       await sql`
         UPDATE calls
-        SET status = 'ai_conversation',
+        SET status = 'agent_detected',
             agent_detected_time = NOW(),
             hold_duration_seconds = CASE
               WHEN hold_start_time IS NOT NULL
@@ -830,20 +869,28 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
             updated_at = NOW()
         WHERE id = ${state.callId}
       `;
-
       await sql`
         INSERT INTO call_events (call_id, event_type, details)
         VALUES (${state.callId}, 'agent_detected', ${JSON.stringify({ transcript })})
       `.catch(() => {});
-
       const baseUrl = BASE_URL();
-      if (call.notification_phone) {
+      if (call?.notification_phone) {
         await notifyAgentDetected(state.callId, call.notification_phone as string, baseUrl).catch(() => {});
       }
     } catch (err) {
-      console.error(`[AI] handleAgentDetected DB error (non-fatal) callId=${state.callId}:`, err);
+      console.error(`[AI] handleAgentDetected simple-flow DB error (non-fatal):`, err);
     }
   })();
+
+  // Play the connect message on the call so the agent hears something while the
+  // user decides whether to transfer. Keep the bidirectional stream alive.
+  if (state.callSid) {
+    const streamUrl = STREAM_URL();
+    state.pendingRedirects++;
+    twilioClient.calls(state.callSid).update({
+      twiml: `<Response><Say voice="Polly.Joanna">${connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Say><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
+    }).catch((err) => console.error(`[AI] Simple-flow Twilio update error:`, err));
+  }
 }
 
 async function handleVoicemail(state: SessionState) {
