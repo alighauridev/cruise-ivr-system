@@ -1,5 +1,14 @@
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
+
+// Prevent unhandled rejections/exceptions from crashing the process
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[server] Unhandled promise rejection (non-fatal):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught exception (non-fatal):', err.message);
+});
+
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
@@ -20,6 +29,16 @@ const wss = new WebSocketServer({ noServer: true });
 wss.on('connection', (ws, req) => {
   handleMediaStream(ws, req);
 });
+
+// Shared counter across module instances so the cleanup timer in media-ws
+// can tell when Twilio is mid-reconnect and avoid wiping the session.
+declare global {
+  // eslint-disable-next-line no-var
+  var _pendingMediaUpgrades: number | undefined;
+}
+if (globalThis._pendingMediaUpgrades === undefined) {
+  globalThis._pendingMediaUpgrades = 0;
+}
 
 // In-memory cache: callId → recording URL (avoids repeated DB hits)
 const recordingUrlCache = new Map<string, string>();
@@ -130,7 +149,27 @@ app.prepare().then(() => {
     const { pathname } = parse(req.url ?? '/');
     if (pathname === '/media-stream') {
       console.log(`[WS] Upgrade request for /media-stream from ${req.socket.remoteAddress}`);
+      globalThis._pendingMediaUpgrades = (globalThis._pendingMediaUpgrades ?? 0) + 1;
+      let decremented = false;
+      const decrement = () => {
+        if (decremented) return;
+        decremented = true;
+        globalThis._pendingMediaUpgrades = Math.max(0, (globalThis._pendingMediaUpgrades ?? 1) - 1);
+      };
+      socket.once('close', decrement);
       wss.handleUpgrade(req, socket, head, (ws) => {
+        // Decrement once the session identifies itself (start event) or the WS closes.
+        const onMsg = (data: Buffer) => {
+          try {
+            const parsed = JSON.parse(data.toString());
+            if (parsed?.event === 'start') {
+              decrement();
+              ws.off('message', onMsg);
+            }
+          } catch {}
+        };
+        ws.on('message', onMsg);
+        ws.once('close', decrement);
         wss.emit('connection', ws, req);
       });
     } else {

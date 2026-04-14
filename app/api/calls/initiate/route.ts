@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { leadId, transferNumber, ivrConfigId } = await req.json();
+  const { leadId, transferNumber, ivrConfigId, aiTask } = await req.json();
   if (!leadId) {
     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
   }
@@ -52,8 +52,8 @@ export async function POST(req: NextRequest) {
   const toNumber = toE164(lead.phone_number as string);
 
   const callRows = await sql`
-    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id)
-    VALUES (${session.user.id}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId})
+    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task)
+    VALUES (${session.user.id}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTask ?? null})
     RETURNING id
   `;
   const callId = callRows[0].id as string;

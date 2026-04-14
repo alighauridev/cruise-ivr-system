@@ -2,18 +2,37 @@
 export const deepgramApiKey = process.env.DEEPGRAM_API_KEY ?? '';
 
 export const AGENT_DETECTION_PHRASES = [
+  // Greeting + help offers
   'how can i help you',
   'how may i help you',
   'how can i assist you',
   'how may i assist you',
-  'thank you for holding, this is',
-  'thank you for waiting, this is',
-  'my name is',
   'what can i do for you',
   'what can i help you with',
+  // Name introductions — "This is Sarah", "My name is Chen", "Hello, this is Mark"
+  'my name is',
+  'this is ',               // "This is Shaniqua" / "This is Sarah" — virtual-assistant filter guards false positives
+  'hello, this is',
+  'hi, this is',
+  'hi this is',
+  'hello this is',
+  'you are speaking with',
+  "you're speaking with",
+  'speaking with',
+  // Post-hold greetings
+  'thank you for holding, this is',
+  'thank you for waiting, this is',
+  'thank you for your patience, this is',
+  'thank you for holding.',
+  'thank you for waiting.',
+  // Good morning/afternoon/evening greetings
   'good morning, my name is',
   'good afternoon, my name is',
   'good evening, my name is',
+  'good morning, this is',
+  'good afternoon, this is',
+  'good evening, this is',
+  // Mid-conversation agent signals
   'i can help you with that',
   'i would be happy to help',
   "i'll be happy to help",

@@ -4,11 +4,11 @@ import { twilioClient } from '@/lib/twilio';
 import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigator';
 import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
 import { notifyAgentDetected } from '@/lib/notifications';
-import { generateTTSMulaw } from '@/lib/openai-tts';
+import { generateTTSMulaw, streamTTSMulaw } from '@/lib/openai-tts';
+import { generateConversationResponse, ConversationTurn as ConvTurn } from './conversation-engine';
 
 import { IVRExecutor, ExecutorAction } from './ivr-executor';
 import { IVRStep } from '@/lib/ivr-engine';
-import { twilioPhone } from '@/lib/twilio';
 import sql from '@/lib/db';
 
 const MAX_CALL_DURATION_MS = 20 * 60 * 1000; // 20 minutes
@@ -22,7 +22,14 @@ const DG_RETRY_DELAYS = [500, 1500, 4000];
  * create a brand-new IVRExecutor starting at step 0 every time.  With it, the
  * existing executor keeps running and the new WS just picks up the same state.
  */
-const callSessions = new Map<string, SessionState>();
+// Use Node.js global so the Map is shared across all module instances in the
+// same process (Next.js API routes load this file separately from server.ts).
+// Without this, injectTTSIntoCall/injectRealtimeInstruction always return false.
+declare global {
+  // eslint-disable-next-line no-var
+  var _callSessions: Map<string, SessionState> | undefined;
+}
+const callSessions: Map<string, SessionState> = (global._callSessions ??= new Map());
 
 interface SessionState {
   callId: string;
@@ -58,6 +65,18 @@ interface SessionState {
   twilioWs: WebSocket | null;
   /** Set to true if a virtual assistant phrase has been heard — suppresses agent detection. */
   isVirtualAssistant: boolean;
+  /** True once the AI conversation mode is active (after cruise agent picks up). */
+  aiConversationMode: boolean;
+  /** Running history of the AI conversation with the cruise agent. */
+  aiConversationHistory: ConvTurn[];
+  /** True while TTS audio is being injected — suppresses echo transcription. */
+  isConvSpeaking: boolean;
+  /** The user's typed task/goal — fetched once from DB on agent detection. */
+  aiTask: string | null;
+  /** OpenAI Realtime API WebSocket — handles STT+LLM+TTS in one low-latency pipeline. */
+  openaiRtWs: WebSocket | null;
+  /** Accumulate AI response text across delta events for DB storage. */
+  aiResponseBuffer: string;
 }
 
 const BASE_URL = () =>
@@ -131,12 +150,22 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
               clearTimeout(state.reconnectTimer);
               state.reconnectTimer = null;
             }
-            // Reconnect Deepgram only if closed/closing (not if already connecting or open)
-            const rs = state.dgSocket?.readyState ?? WebSocket.CLOSED;
-            if (rs === WebSocket.CLOSING || rs === WebSocket.CLOSED) {
-              connectDeepgram(state, 0).catch((err) =>
-                console.error(`[MediaWS] DG reconnect error on WS reconnect:`, err)
-              );
+
+            if (state.aiConversationMode) {
+              // AI conversation mode — use OpenAI Realtime, skip Deepgram
+              if (!state.openaiRtWs || state.openaiRtWs.readyState === WebSocket.CLOSED || state.openaiRtWs.readyState === WebSocket.CLOSING) {
+                connectOpenAIRealtime(state).catch((err) =>
+                  console.error(`[OpenAI RT] Reconnect error callId=${callId}:`, err)
+                );
+              }
+            } else {
+              // IVR mode — reconnect Deepgram only if closed/closing
+              const rs = state.dgSocket?.readyState ?? WebSocket.CLOSED;
+              if (rs === WebSocket.CLOSING || rs === WebSocket.CLOSED) {
+                connectDeepgram(state, 0).catch((err) =>
+                  console.error(`[MediaWS] DG reconnect error on WS reconnect:`, err)
+                );
+              }
             }
             break;
           }
@@ -164,6 +193,12 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             holdStatusUpdated: false,
             isVirtualAssistant: false,
             twilioWs: ws,
+            aiConversationMode: false,
+            aiConversationHistory: [],
+            isConvSpeaking: false,
+            aiTask: null,
+            openaiRtWs: null,
+            aiResponseBuffer: '',
           };
 
           callSessions.set(callId, state!);
@@ -177,9 +212,15 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
 
         case 'media': {
           if (!state) return;
-          if (state.dgSocket && state.dgSocket.readyState === WebSocket.OPEN) {
-            const audioBuffer = Buffer.from(msg.media.payload, 'base64');
-            state.dgSocket.send(audioBuffer);
+          if (state.aiConversationMode && state.openaiRtWs?.readyState === WebSocket.OPEN) {
+            // OpenAI Realtime is connected — send audio directly (g711_ulaw passthrough, no conversion).
+            state.openaiRtWs.send(JSON.stringify({
+              type: 'input_audio_buffer.append',
+              audio: msg.media.payload,
+            }));
+          } else if (state.dgSocket?.readyState === WebSocket.OPEN) {
+            // Deepgram fallback — works for both IVR mode and AI conversation mode when RT is unavailable.
+            state.dgSocket.send(Buffer.from(msg.media.payload, 'base64'));
           }
           break;
         }
@@ -187,6 +228,10 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
         case 'mark': {
           // Twilio sends this when audio playback reaches a mark we sent
           console.log(`[MediaWS] Mark received: ${msg.mark?.name} callId=${state?.callId}`);
+          if (state && msg.mark?.name?.startsWith('conv-tts-done-')) {
+            // Give 300ms buffer after playback before listening for agent reply
+            setTimeout(() => { if (state) state.isConvSpeaking = false; }, 300);
+          }
           break;
         }
 
@@ -213,20 +258,39 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
   ws.on('close', () => {
     console.log(`[MediaWS] WS closed callId=${state?.callId ?? 'unknown'} pendingRedirects=${state?.pendingRedirects} pendingCloses=${state?.pendingCloses}`);
     if (!state) return;
+
+    // If a newer WS has already taken over (race: new WS connected before this
+    // close event fired), this close is stale — just decrement the counter and
+    // bail out without scheduling cleanup or calling cleanup().
+    const isCurrentWs = state.twilioWs === ws;
+
     if (state.pendingCloses > 0) {
-      // This close is the expected follow-up to a redirect stop — safe to ignore.
       state.pendingCloses--;
-      // If all expected closes are consumed, set a reconnect timeout.
-      // If no new WS arrives within 10s, the call has genuinely ended.
-      if (state.pendingCloses === 0 && !state.reconnectTimer && !state.isTerminated) {
-        state.reconnectTimer = setTimeout(() => {
-          if (!state!.isTerminated) {
-            console.log(`[MediaWS] No WS reconnect within 10s — cleaning up callId=${state!.callId}`);
+      // Only start the reconnect timer if no new WS has already arrived.
+      if (state.pendingCloses === 0 && !state.reconnectTimer && !state.isTerminated && isCurrentWs) {
+        const scheduleCleanup = (delay: number) => {
+          state!.reconnectTimer = setTimeout(() => {
+            state!.reconnectTimer = null;
+            if (state!.isTerminated) return;
+            // If Twilio still has an upgrade in flight, give it more time.
+            const pending = (globalThis as { _pendingMediaUpgrades?: number })._pendingMediaUpgrades ?? 0;
+            if (pending > 0 && state!.twilioWs?.readyState !== WebSocket.OPEN) {
+              console.log(`[MediaWS] Reconnect pending (${pending} upgrades in flight) — extending wait callId=${state!.callId}`);
+              scheduleCleanup(10_000);
+              return;
+            }
+            // If the WS slot has already been replaced, don't cleanup.
+            if (state!.twilioWs && state!.twilioWs !== ws && state!.twilioWs.readyState === WebSocket.OPEN) {
+              console.log(`[MediaWS] New WS already active — skipping cleanup callId=${state!.callId}`);
+              return;
+            }
+            console.log(`[MediaWS] No WS reconnect within window — cleaning up callId=${state!.callId}`);
             cleanup(state!);
-          }
-        }, 10_000);
+          }, delay);
+        };
+        scheduleCleanup(30_000);
       }
-    } else if (!state.isTerminated) {
+    } else if (!state.isTerminated && isCurrentWs) {
       cleanup(state);
     }
   });
@@ -367,7 +431,19 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
 }
 
 async function processIVRSpeech(state: SessionState, transcript: string) {
-  if (state.isAgentDetected || state.isTerminated) return;
+  if (state.isTerminated) return;
+
+  // Route to conversation processor when in AI conversation mode
+  if (state.aiConversationMode) {
+    if (state.isConvSpeaking) {
+      console.log(`[ConvMode] Suppressed transcript (AI speaking): "${transcript.substring(0, 60)}"`);
+    } else {
+      await processConversationSpeech(state, transcript);
+    }
+    return;
+  }
+
+  if (state.isAgentDetected) return;
 
   state.lastTranscriptAt = Date.now();
   console.log(`[IVR] Said: "${transcript}"`);
@@ -546,6 +622,150 @@ async function checkHoldStatus(state: SessionState): Promise<void> {
   }
 }
 
+// ─── AI Conversation Mode helpers ────────────────────────────────────────────
+
+/**
+ * Inject TTS audio into the live call and record a conversation_ai_say event.
+ * Exported so API routes (/api/calls/speak, /api/calls/ai-respond) can call it.
+ */
+async function dispatchConversationSay(state: SessionState, text: string): Promise<void> {
+  state.isConvSpeaking = true;
+
+  // Persist so SSE delivers it to the dashboard
+  await sql`
+    INSERT INTO call_events (call_id, event_type, details)
+    VALUES (${state.callId}, 'conversation_ai_say', ${JSON.stringify({ text, timestamp: Date.now() })})
+  `.catch(() => {});
+
+  state.aiConversationHistory.push({ speaker: 'us', text, timestamp: Date.now() });
+
+  try {
+    // Stream audio chunks to Twilio as soon as OpenAI generates them —
+    // first word plays within ~0.5s instead of waiting for the full response.
+    await streamTTSMulaw(text, (chunk) => {
+      if (state.twilioWs && state.twilioWs.readyState === WebSocket.OPEN) {
+        state.twilioWs.send(JSON.stringify({
+          event: 'media',
+          streamSid: state.streamSid,
+          media: { payload: chunk.toString('base64') },
+        }));
+      }
+    });
+    if (state.twilioWs && state.twilioWs.readyState === WebSocket.OPEN) {
+      state.twilioWs.send(JSON.stringify({
+        event: 'mark',
+        streamSid: state.streamSid,
+        mark: { name: `conv-tts-done-${Date.now()}` },
+      }));
+    }
+  } catch (err: unknown) {
+    console.error(`[ConvMode] TTS injection failed:`, err);
+    state.isConvSpeaking = false;
+  }
+}
+
+/** Called when the cruise agent speaks during AI conversation mode. */
+async function processConversationSpeech(state: SessionState, transcript: string): Promise<void> {
+  // Set immediately (before any await) to prevent concurrent calls from both
+  // generating a response when two transcripts arrive at the same time.
+  state.isConvSpeaking = true;
+  state.lastTranscriptAt = Date.now();
+  console.log(`[ConvMode] Agent said: "${transcript}" callId=${state.callId}`);
+
+  await sql`
+    INSERT INTO call_events (call_id, event_type, details)
+    VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: transcript, speaker: 'agent', timestamp: Date.now() })})
+  `.catch(() => {});
+
+  state.aiConversationHistory.push({ speaker: 'agent', text: transcript, timestamp: Date.now() });
+
+  try {
+    const response = await generateConversationResponse(state.aiConversationHistory, state.callId, state.aiTask);
+    if (response) {
+      await dispatchConversationSay(state, response);
+    } else {
+      // AI chose to stay silent — release the speaking lock so next agent turn is heard
+      state.isConvSpeaking = false;
+    }
+  } catch (err) {
+    console.error(`[ConvMode] generateConversationResponse error:`, err);
+    state.isConvSpeaking = false;
+  }
+}
+
+/**
+ * Exported injection bridge — called by /api/calls/speak and /api/calls/ai-respond.
+ * Works because API routes and the WS server share the same Node.js process.
+ */
+export async function injectTTSIntoCall(callId: string, text: string): Promise<{ ok: boolean; reason?: string }> {
+  const state = callSessions.get(callId);
+  if (!state) return { ok: false, reason: `callId not in sessions (map size=${callSessions.size})` };
+  if (state.isTerminated) return { ok: false, reason: 'call terminated' };
+  if (!state.aiConversationMode) return { ok: false, reason: 'not in ai_conversation mode' };
+  if (!state.twilioWs || state.twilioWs.readyState !== WebSocket.OPEN) {
+    return { ok: false, reason: `Twilio WS readyState=${state.twilioWs?.readyState ?? 'null'}` };
+  }
+  await dispatchConversationSay(state, text);
+  return { ok: true };
+}
+
+/**
+ * Send a real-time instruction to OpenAI Realtime so the AI reformulates it
+ * naturally and speaks it. Used by /api/calls/speak so the user can guide
+ * the AI mid-conversation without directly scripting what it says.
+ */
+export function injectRealtimeInstruction(callId: string, instruction: string): boolean {
+  const state = callSessions.get(callId);
+  if (!state) { console.warn(`[Speak] callId=${callId} not in callSessions (map size=${callSessions.size})`); return false; }
+  if (state.isTerminated) { console.warn(`[Speak] callId=${callId} isTerminated`); return false; }
+  if (!state.aiConversationMode) { console.warn(`[Speak] callId=${callId} not in aiConversationMode`); return false; }
+  if (!state.openaiRtWs || state.openaiRtWs.readyState !== WebSocket.OPEN) {
+    console.warn(`[Speak] callId=${callId} OpenAI RT not ready (readyState=${state.openaiRtWs?.readyState ?? 'null'})`);
+    return false;
+  }
+
+  state.openaiRtWs.send(JSON.stringify({
+    type: 'conversation.item.create',
+    item: {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: `[USER INSTRUCTION] ${instruction}` }],
+    },
+  }));
+  state.openaiRtWs.send(JSON.stringify({ type: 'response.create' }));
+  console.log(`[OpenAI RT] Instruction injected callId=${callId}: "${instruction.substring(0, 60)}"`);
+  return true;
+}
+
+export function getConversationHistory(callId: string): ConvTurn[] | null {
+  const state = callSessions.get(callId);
+  if (!state || !state.aiConversationMode) return null;
+  return state.aiConversationHistory;
+}
+
+export function getAiTask(callId: string): string | null {
+  return callSessions.get(callId)?.aiTask ?? null;
+}
+
+/**
+ * Manually inject a DTMF digit into an active call during IVR navigation.
+ * Safe to call while the AI executor is also running — they share the same state.
+ */
+export async function pressDigitOnCall(callId: string, digit: string): Promise<{ ok: boolean; reason?: string }> {
+  const state = callSessions.get(callId);
+  if (!state) return { ok: false, reason: `No active session for callId=${callId}` };
+  if (state.isTerminated) return { ok: false, reason: 'call terminated' };
+  if (!state.callSid) return { ok: false, reason: 'callSid not yet set' };
+  try {
+    await dispatchAction(state, { type: 'PRESS', digit });
+    return { ok: true };
+  } catch (err: unknown) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function handleAgentDetected(state: SessionState, transcript: string) {
   if (state.isAgentDetected || state.isTerminated) return;
   state.isAgentDetected = true;
@@ -553,70 +773,77 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
 
   console.log(`[AI] AGENT DETECTED callId=${state.callId}`);
 
-  try {
-    const rows = await sql`
-      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
-      FROM calls c
-      JOIN users u ON u.id = c.user_id
-      WHERE c.id = ${state.callId}
-      LIMIT 1
-    `;
+  // ── Step 1: Enter AI conversation mode in-memory immediately ─────────────
+  // Do this before any awaits so the Twilio stream stays alive.
+  state.aiConversationMode = true;
+  state.aiConversationHistory = [];
+  state.isConvSpeaking = false;
+  // aiTask will be fetched from DB below; keep null for now so RT can still start
+  state.aiTask = state.aiTask ?? null;
 
-    if (rows.length === 0) return;
-    const call = rows[0];
-
-    await sql`
-      UPDATE calls
-      SET status = 'agent_detected',
-          agent_detected_time = NOW(),
-          hold_duration_seconds = CASE
-            WHEN hold_start_time IS NOT NULL
-            THEN EXTRACT(EPOCH FROM (NOW() - hold_start_time))::INTEGER
-            ELSE 0
-          END,
-          updated_at = NOW()
-      WHERE id = ${state.callId}
-    `;
-
-    await sql`
-      INSERT INTO call_events (call_id, event_type, details)
-      VALUES (${state.callId}, 'agent_detected', ${JSON.stringify({ transcript })})
-    `;
-
-    const connectMsg = (call.connect_message as string | null) ||
-      'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
-
-    if (state.callSid) {
-      const escapedMsg = connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      await twilioClient.calls(state.callSid).update({
-        twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Pause length="25"/><Say voice="Polly.Joanna">We are still connecting you. Please hold.</Say><Pause length="25"/><Say voice="Polly.Joanna">Thank you for waiting. Our customer will be with you shortly.</Say><Pause length="3600"/></Response>`,
-      });
-    }
-
-    const baseUrl = BASE_URL();
-    if (call.notification_phone) {
-      await notifyAgentDetected(state.callId, call.notification_phone as string, baseUrl);
-    }
-
-    // Auto-callback: resolve transfer number then check setting
-    let transferNumber = call.transfer_number as string | null;
-    if (!transferNumber) {
-      const nums = (call.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
-      const defaultNum = nums.find((n) => n.isDefault) ?? nums[0];
-      transferNumber = defaultNum?.phone ?? null;
-    }
-    if (transferNumber) {
-      const autoSetting = await sql`
-        SELECT value FROM settings WHERE user_id = ${call.user_id as string} AND key = 'auto_callback_enabled' LIMIT 1
-      `;
-      if (autoSetting[0]?.value === 'true') {
-        console.log(`[AI] Auto-callback enabled — bridging callId=${state.callId} to ${transferNumber}`);
-        await autoTransferToConference(state.callId, call.twilio_call_sid as string, transferNumber, baseUrl, connectMsg);
-      }
-    }
-  } catch (err) {
-    console.error(`[AI] handleAgentDetected error:`, err);
+  // ── Step 2: Reconnect Twilio stream + start OpenAI RT immediately ─────────
+  // These don't need DB data — fire them before any DB queries.
+  if (state.callSid) {
+    const streamUrl = STREAM_URL();
+    state.pendingRedirects++;
+    twilioClient.calls(state.callSid).update({
+      twiml: `<Response><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
+    }).then(() => {
+      console.log(`[AI] Entered ai_conversation mode callId=${state.callId}`);
+    }).catch((err) => {
+      console.error(`[AI] Twilio update error callId=${state.callId}:`, err);
+    });
   }
+
+  connectOpenAIRealtime(state).catch((err) =>
+    console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err)
+  );
+
+  // ── Step 3: DB updates in background — don't block the stream ────────────
+  (async () => {
+    try {
+      const rows = await sql`
+        SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
+        FROM calls c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.id = ${state.callId}
+        LIMIT 1
+      `;
+
+      if (rows.length === 0) return;
+      const call = rows[0];
+
+      // Populate aiTask now that we have the DB row (RT will use it on next response)
+      if (!state.aiTask) {
+        state.aiTask = (call.ai_task as string | null) || null;
+      }
+
+      await sql`
+        UPDATE calls
+        SET status = 'ai_conversation',
+            agent_detected_time = NOW(),
+            hold_duration_seconds = CASE
+              WHEN hold_start_time IS NOT NULL
+              THEN EXTRACT(EPOCH FROM (NOW() - hold_start_time))::INTEGER
+              ELSE 0
+            END,
+            updated_at = NOW()
+        WHERE id = ${state.callId}
+      `;
+
+      await sql`
+        INSERT INTO call_events (call_id, event_type, details)
+        VALUES (${state.callId}, 'agent_detected', ${JSON.stringify({ transcript })})
+      `.catch(() => {});
+
+      const baseUrl = BASE_URL();
+      if (call.notification_phone) {
+        await notifyAgentDetected(state.callId, call.notification_phone as string, baseUrl).catch(() => {});
+      }
+    } catch (err) {
+      console.error(`[AI] handleAgentDetected DB error (non-fatal) callId=${state.callId}:`, err);
+    }
+  })();
 }
 
 async function handleVoicemail(state: SessionState) {
@@ -659,46 +886,187 @@ async function endCallMaxDuration(state: SessionState) {
   }
 }
 
+// ─── OpenAI Realtime API ─────────────────────────────────────────────────────
+
 /**
- * Auto-transfer: bridge the cruise line call with the customer's phone via Twilio conference.
- * Same logic as /api/calls/transfer but triggered automatically on agent detection.
+ * Poll until the Twilio bidirectional stream is open, then trigger OpenAI to
+ * speak the opening greeting. This handles the race between the TwiML redirect
+ * (which briefly closes/reopens the stream) and the OpenAI RT connection.
  */
-async function autoTransferToConference(callId: string, twilioCallSid: string, transferNumber: string, baseUrl: string, connectMessage: string) {
-  try {
-    const conferenceRoom = `CruisePro-${callId}`;
-    const escapedMsg = connectMessage.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function scheduleOpeningSpeech(state: SessionState, rtWs: WebSocket, attempt: number): void {
+  if (state.isTerminated || rtWs.readyState !== WebSocket.OPEN) return;
+  if (state.aiConversationHistory.length > 0) return; // already spoken
 
-    // Play connect message to cruise agent, then bridge into conference
-    await twilioClient.calls(twilioCallSid).update({
-      twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Dial><Conference waitUrl="">${conferenceRoom}</Conference></Dial></Response>`,
-    });
-
-    // Call the customer and add them to the conference
-    await twilioClient.calls.create({
-      to: transferNumber,
-      from: twilioPhone,
-      twiml: `<Response><Say voice="alice">You are being connected to a live cruise line agent. Please hold for one moment.</Say><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
-      statusCallback: `${baseUrl}/api/calls/status`,
-      statusCallbackMethod: 'POST',
-    });
-
-    await sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${callId}`;
-    await sql`
-      INSERT INTO call_events (call_id, event_type, details)
-      VALUES (${callId}, 'auto_transfer_initiated', ${JSON.stringify({ transferNumber, conferenceRoom })})
-    `;
-
-    console.log(`[AI] Auto-transfer complete — conference=${conferenceRoom}`);
-  } catch (err: any) {
-    console.error(`[AI] Auto-transfer failed:`, err?.message ?? err);
+  if (state.twilioWs?.readyState === WebSocket.OPEN) {
+    console.log(`[OpenAI RT] Triggering opening speech callId=${state.callId}`);
+    rtWs.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        instructions: `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences.`,
+      },
+    }));
+  } else if (attempt < 20) {
+    // Twilio stream not yet reconnected — retry every 200ms (up to 4s total)
+    setTimeout(() => scheduleOpeningSpeech(state, rtWs, attempt + 1), 200);
+  } else {
+    console.warn(`[OpenAI RT] Gave up waiting for Twilio stream callId=${state.callId}`);
   }
 }
+
+/**
+ * Connect to the OpenAI Realtime API and relay audio between Twilio and OpenAI.
+ * Replaces the Deepgram → GPT-4o → TTS pipeline with a single low-latency connection.
+ * First audio from OpenAI arrives within ~300ms of the agent speaking.
+ */
+async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+  if (state.openaiRtWs) return; // already connected
+
+  console.log(`[OpenAI RT] Connecting callId=${state.callId}`);
+
+  const rtWs = new WebSocket(
+    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+    {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'realtime=v1',
+      },
+    }
+  );
+  state.openaiRtWs = rtWs;
+
+  rtWs.on('open', () => {
+    console.log(`[OpenAI RT] Connected callId=${state.callId}`);
+
+    // Configure session: g711_ulaw matches Twilio's mulaw format directly.
+    // coral is OpenAI's most natural-sounding conversational voice.
+    rtWs.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        modalities: ['text', 'audio'],
+        instructions: buildRtSystemPrompt(state.aiTask),
+        voice: 'coral',
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        input_audio_transcription: { model: 'whisper-1' },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 700,
+        },
+      },
+    }));
+
+    // If this is the opening (no history yet), speak the greeting once the
+    // Twilio bidirectional stream is confirmed open. We poll briefly because
+    // the TwiML redirect that restarts the stream may not have completed yet.
+    if (state.aiTask && state.aiConversationHistory.length === 0) {
+      scheduleOpeningSpeech(state, rtWs, 0);
+    } else if (state.aiConversationHistory.length > 0) {
+      // Reconnected mid-conversation — replay history so OpenAI has context
+      for (const turn of state.aiConversationHistory) {
+        rtWs.send(JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: turn.speaker === 'us' ? 'assistant' : 'user',
+            content: [{ type: 'input_text', text: turn.text }],
+          },
+        }));
+      }
+    }
+  });
+
+  rtWs.on('message', async (raw: WebSocket.RawData) => {
+    try {
+      const event = JSON.parse(raw.toString());
+
+      switch (event.type) {
+        case 'response.audio.delta':
+          // Forward audio chunk to Twilio immediately (~300ms latency)
+          if (state.twilioWs?.readyState === WebSocket.OPEN) {
+            state.twilioWs.send(JSON.stringify({
+              event: 'media',
+              streamSid: state.streamSid,
+              media: { payload: event.delta }, // already base64 g711_ulaw
+            }));
+          }
+          break;
+
+        case 'response.audio_transcript.delta':
+          state.aiResponseBuffer += event.delta ?? '';
+          break;
+
+        case 'response.audio_transcript.done': {
+          const text = state.aiResponseBuffer.trim();
+          state.aiResponseBuffer = '';
+          if (text) {
+            state.aiConversationHistory.push({ speaker: 'us', text, timestamp: Date.now() });
+            await sql`
+              INSERT INTO call_events (call_id, event_type, details)
+              VALUES (${state.callId}, 'conversation_ai_say', ${JSON.stringify({ text, timestamp: Date.now() })})
+            `.catch(() => {});
+            console.log(`[OpenAI RT] AI said: "${text.substring(0, 80)}" callId=${state.callId}`);
+          }
+          break;
+        }
+
+        case 'conversation.item.input_audio_transcription.completed': {
+          const agentText = (event.transcript as string | undefined)?.trim();
+          if (agentText) {
+            state.aiConversationHistory.push({ speaker: 'agent', text: agentText, timestamp: Date.now() });
+            await sql`
+              INSERT INTO call_events (call_id, event_type, details)
+              VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: agentText, speaker: 'agent', timestamp: Date.now() })})
+            `.catch(() => {});
+            console.log(`[OpenAI RT] Agent said: "${agentText.substring(0, 80)}" callId=${state.callId}`);
+          }
+          break;
+        }
+
+        case 'error':
+          console.error(`[OpenAI RT] API error callId=${state.callId}:`, event.error);
+          break;
+      }
+    } catch (err) {
+      console.error(`[OpenAI RT] Message handler error callId=${state.callId}:`, err);
+    }
+  });
+
+  rtWs.on('close', (code) => {
+    console.log(`[OpenAI RT] Closed code=${code} callId=${state.callId}`);
+    if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
+  });
+
+  rtWs.on('error', (err) => {
+    console.error(`[OpenAI RT] WS error callId=${state.callId}:`, err.message);
+    if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
+  });
+}
+
+function buildRtSystemPrompt(aiTask: string | null): string {
+  return `You are a polite English-speaking customer calling a cruise line. Your goal: "${aiTask ?? 'Inquire about cruise options'}".
+
+Rules:
+- ALWAYS speak English only — never switch to any other language regardless of what you hear.
+- Keep every response to 1-2 sentences. Be natural and conversational.
+- If asked for your name, say "My name is Alex."
+- If asked for account info you don't have, say "Let me check that and get back to you."
+- If the agent can't help or asks to speak with a manager, say "Of course, let me transfer you now."
+- Never break character. You are the customer, the person on the other end is the cruise line agent.`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function cleanup(state: SessionState) {
   if (state.isTerminated) return;
   state.isTerminated = true;
   callSessions.delete(state.callId);
   state.ivrExecutor?.destroy();
+
+  // Close OpenAI Realtime connection if active
+  try { state.openaiRtWs?.close(); } catch {}
+  state.openaiRtWs = null;
 
   if (state.maxDurationTimer) {
     clearTimeout(state.maxDurationTimer);
@@ -731,7 +1099,7 @@ async function saveLiveTranscript(callId: string) {
     SELECT event_type, details, created_at
     FROM call_events
     WHERE call_id = ${callId}
-      AND event_type IN ('transcript', 'ai_action')
+      AND event_type IN ('transcript', 'ai_action', 'conversation_transcript', 'conversation_ai_say')
     ORDER BY created_at ASC
   `;
 
@@ -748,6 +1116,10 @@ async function saveLiveTranscript(callId: string) {
       utterances.push({ speaker: 0, text: details.text ?? '', start: ts, end: ts + 1 });
     } else if (ev.event_type === 'ai_action' && details.action === 'SAY') {
       utterances.push({ speaker: 1, text: details.phrase ?? '', start: ts, end: ts + 1 });
+    } else if (ev.event_type === 'conversation_transcript') {
+      utterances.push({ speaker: 0, text: details.text ?? '', start: ts, end: ts + 1 });
+    } else if (ev.event_type === 'conversation_ai_say') {
+      utterances.push({ speaker: 1, text: details.text ?? '', start: ts, end: ts + 1 });
     }
   }
 

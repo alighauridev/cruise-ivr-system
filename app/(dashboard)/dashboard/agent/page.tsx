@@ -45,6 +45,7 @@ const STATUS_LABELS: Record<string, string> = {
   navigating_ivr: 'Navigating IVR menu...',
   on_hold: 'Waiting on hold...',
   agent_detected: 'Live agent detected!',
+  ai_conversation: 'AI handling conversation...',
   transferring: 'Transferring to you...',
   connected: 'Connected',
   completed: 'Call completed',
@@ -57,6 +58,7 @@ const STATUS_COLORS: Record<string, string> = {
   navigating_ivr: 'text-blue-400',
   on_hold: 'text-orange-400',
   agent_detected: 'text-green-400',
+  ai_conversation: 'text-purple-400',
   transferring: 'text-purple-400',
   connected: 'text-green-400',
   completed: 'text-gray-400',
@@ -69,6 +71,7 @@ const STATUS_BG: Record<string, string> = {
   navigating_ivr: 'bg-blue-900/30 border-blue-700/50',
   on_hold: 'bg-orange-900/30 border-orange-700/50',
   agent_detected: 'bg-green-900/30 border-green-700/50',
+  ai_conversation: 'bg-purple-900/30 border-purple-700/50',
   transferring: 'bg-purple-900/30 border-purple-700/50',
   connected: 'bg-green-900/30 border-green-700/50',
   completed: 'bg-gray-800/50 border-gray-700',
@@ -91,15 +94,24 @@ export default function AgentPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [selectedIvrConfigId, setSelectedIvrConfigId] = useState<string>('');
   const [selectedTransferNumberId, setSelectedTransferNumberId] = useState<string>('');
+  const [aiTask, setAiTask] = useState('');
   const [search, setSearch] = useState('');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [events, setEvents] = useState<CallEvent[]>([]);
+  // AI conversation mode
+  const [convMessages, setConvMessages] = useState<Array<{ id: string; speaker: 'agent' | 'us'; text: string; timestamp: string }>>([]);
+  const [convInput, setConvInput] = useState('');
+  const [convSending, setConvSending] = useState(false);
+  const [convAiLoading, setConvAiLoading] = useState(false);
+  const [keypadPressing, setKeypadPressing] = useState(false);
+  const [keypadLastDigit, setKeypadLastDigit] = useState('');
   const esRef = useRef<EventSource | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const convEndRef = useRef<HTMLDivElement>(null);
 
   // Load leads, IVR configs, and transfer numbers
   useEffect(() => {
@@ -122,6 +134,11 @@ export default function AgentPage() {
         if (def) setSelectedTransferNumberId(def.id);
       });
   }, []);
+
+  // Auto-scroll conversation
+  useEffect(() => {
+    convEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [convMessages]);
 
   // Cleanup SSE on unmount
   useEffect(() => {
@@ -160,18 +177,39 @@ export default function AgentPage() {
       const msg = JSON.parse(e.data);
 
       if (msg.type === 'snapshot') {
-        // Replace entire event list (deduplicates on reconnect)
         setEvents(msg.events ?? []);
         updateCall(msg.call);
+        // Rebuild conversation messages from snapshot
+        const convEvs = (msg.events ?? []).filter(
+          (e: CallEvent) => e.event_type === 'conversation_transcript' || e.event_type === 'conversation_ai_say'
+        );
+        setConvMessages(convEvs.map((e: CallEvent) => ({
+          id: e.id,
+          speaker: e.event_type === 'conversation_transcript' ? 'agent' : 'us',
+          text: ((e.details as Record<string, string>).text) ?? '',
+          timestamp: e.created_at,
+        })));
       }
 
       if (msg.type === 'event') {
-        // Deduplicate by event ID before appending
         setEvents((prev) => {
           if (prev.some((ev) => ev.id === msg.event.id)) return prev;
           return [...prev, msg.event];
         });
         updateCall(msg.call);
+        // Handle conversation events
+        if (msg.event.event_type === 'conversation_transcript' || msg.event.event_type === 'conversation_ai_say') {
+          const det = msg.event.details as Record<string, string>;
+          setConvMessages((prev) => {
+            if (prev.some((m) => m.id === msg.event.id)) return prev;
+            return [...prev, {
+              id: msg.event.id,
+              speaker: msg.event.event_type === 'conversation_transcript' ? 'agent' : 'us',
+              text: det.text ?? '',
+              timestamp: msg.event.created_at,
+            }];
+          });
+        }
       }
 
       if (msg.type === 'status') {
@@ -198,6 +236,7 @@ export default function AgentPage() {
     setError('');
     setElapsed(0);
     setEvents([]);
+    setConvMessages([]);
 
     const selectedTransferNumber = transferNumbers.find((n) => n.id === selectedTransferNumberId);
     const res = await fetch('/api/calls/initiate', {
@@ -207,6 +246,7 @@ export default function AgentPage() {
         leadId: selectedLead.id,
         ivrConfigId: selectedIvrConfigId || undefined,
         transferNumber: selectedTransferNumber?.phone,
+        aiTask: aiTask.trim() || undefined,
       }),
     });
 
@@ -257,6 +297,52 @@ export default function AgentPage() {
       setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
     } else {
       setError(data.error);
+    }
+  }
+
+  async function handleConvSpeak() {
+    if (!activeCall || !convInput.trim() || convSending) return;
+    const text = convInput.trim();
+    setConvInput('');
+    setConvSending(true);
+    try {
+      await fetch('/api/calls/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: activeCall.callId, text }),
+      });
+    } finally {
+      setConvSending(false);
+    }
+  }
+
+  async function handleAiRespond() {
+    if (!activeCall || convAiLoading) return;
+    setConvAiLoading(true);
+    try {
+      await fetch('/api/calls/ai-respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: activeCall.callId }),
+      });
+    } finally {
+      setConvAiLoading(false);
+    }
+  }
+
+  async function handleKeypadPress(digit: string) {
+    if (!activeCall || keypadPressing) return;
+    setKeypadPressing(true);
+    setKeypadLastDigit(digit);
+    try {
+      await fetch('/api/calls/press', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: activeCall.callId, digit }),
+      });
+    } finally {
+      setKeypadPressing(false);
+      setTimeout(() => setKeypadLastDigit(''), 600);
     }
   }
 
@@ -370,6 +456,23 @@ export default function AgentPage() {
                 </div>
               )}
 
+              {/* AI Task input */}
+              <div>
+                <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">Task for AI Agent</label>
+                <textarea
+                  rows={3}
+                  placeholder={`What do you need? e.g. "Book a 7-night Caribbean cruise for 2 adults, June 15 departure, budget $3500"`}
+                  value={aiTask}
+                  onChange={(e) => setAiTask(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 resize-none"
+                />
+                <p className="text-xs text-gray-600 mt-1">
+                  {aiTask.trim()
+                    ? 'AI will speak this task to the agent and handle the conversation.'
+                    : 'Leave blank to use the standard connect message.'}
+                </p>
+              </div>
+
               {!selectedIvrConfigId && (
                 <p className="text-yellow-500 text-xs">
                   No IVR script selected — will go straight to hold detection.
@@ -433,9 +536,10 @@ export default function AgentPage() {
                     { key: 'navigating_ivr', label: 'IVR Navigation' },
                     { key: 'on_hold', label: 'Waiting on Hold' },
                     { key: 'agent_detected', label: 'Agent Detected' },
+                    { key: 'ai_conversation', label: 'AI Conversation' },
                     { key: 'connected', label: 'Customer Connected' },
                   ].map((step, i) => {
-                    const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', 'connected', 'completed'];
+                    const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', 'ai_conversation', 'connected', 'completed'];
                     const currentIdx = statusOrder.indexOf(activeCall.status);
                     const stepIdx = statusOrder.indexOf(step.key);
                     const done = currentIdx > stepIdx;
@@ -489,7 +593,85 @@ export default function AgentPage() {
 
               <div className="flex-1" />
 
-              {/* Action buttons */}
+              {/* AI Conversation Panel */}
+              {activeCall.status === 'ai_conversation' && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                    <p className="text-xs font-semibold text-purple-400 uppercase tracking-wider">AI Handling Conversation</p>
+                  </div>
+
+                  {/* Chat messages */}
+                  <div className="bg-black/20 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-2">
+                    {convMessages.length === 0 ? (
+                      <p className="text-gray-600 text-xs text-center mt-6">Waiting for cruise agent to speak...</p>
+                    ) : (
+                      convMessages.map((msg) => (
+                        <div key={msg.id} className={`flex flex-col ${msg.speaker === 'us' ? 'items-end' : 'items-start'}`}>
+                          <span className="text-xs text-gray-600 mb-0.5">
+                            {msg.speaker === 'us' ? 'AI / You' : 'Cruise Agent'} ·{' '}
+                            {new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                          <div className={`max-w-xs px-3 py-2 rounded-xl text-xs leading-relaxed ${
+                            msg.speaker === 'us'
+                              ? 'bg-purple-700/60 text-purple-100 rounded-tr-none'
+                              : 'bg-gray-700/60 text-gray-200 rounded-tl-none'
+                          }`}>
+                            {msg.text}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                    <div ref={convEndRef} />
+                  </div>
+
+                  {/* Manual text input */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Type a message to speak..."
+                      value={convInput}
+                      onChange={(e) => setConvInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleConvSpeak()}
+                      disabled={convSending}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={handleConvSpeak}
+                      disabled={!convInput.trim() || convSending}
+                      className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+                    >
+                      Send
+                    </button>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAiRespond}
+                      disabled={convAiLoading}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
+                    </button>
+                    <button
+                      onClick={handleTransfer}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      Transfer to Me
+                    </button>
+                    <button
+                      onClick={handleEndCall}
+                      className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      End Call
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons (non-AI-conversation statuses) */}
+              {activeCall.status !== 'ai_conversation' && (
               <div className="flex gap-3">
                 {activeCall.status === 'agent_detected' && (
                   <button
@@ -508,6 +690,7 @@ export default function AgentPage() {
                   </button>
                 )}
               </div>
+              )}
             </div>
           ) : (
             <div className="h-full flex items-center justify-center">

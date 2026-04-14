@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface Call {
   id: string;
@@ -17,10 +17,13 @@ interface Call {
   transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
 }
 
+const PAGE_SIZE = 25;
+
 const STATUS_BADGE: Record<string, string> = {
   completed: 'bg-green-900/50 text-green-400 border-green-700/50',
   connected: 'bg-blue-900/50 text-blue-400 border-blue-700/50',
   agent_detected: 'bg-purple-900/50 text-purple-400 border-purple-700/50',
+  ai_conversation: 'bg-purple-900/50 text-purple-400 border-purple-700/50',
   on_hold: 'bg-orange-900/50 text-orange-400 border-orange-700/50',
   navigating_ivr: 'bg-yellow-900/50 text-yellow-400 border-yellow-700/50',
   failed: 'bg-red-900/50 text-red-400 border-red-700/50',
@@ -43,30 +46,37 @@ function fmtDate(iso: string) {
 
 export default function CallLogsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
-  const load = async () => {
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const load = useCallback(async (p: number, status: string) => {
     setLoading(true);
-    const params = new URLSearchParams({ limit: '100' });
-    if (statusFilter) params.set('status', statusFilter);
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
+    if (status) params.set('status', status);
     const r = await fetch(`/api/calls?${params}`);
     const d = await r.json();
     setCalls(d.calls ?? []);
+    setTotal(d.total ?? 0);
     setLoading(false);
-  };
+  }, []);
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => {
+    setPage(0);
+    load(0, statusFilter);
+  }, [statusFilter, load]);
+
+  useEffect(() => {
+    load(page, statusFilter);
+  }, [page, load, statusFilter]);
 
   const toggleTranscript = (callId: string) => {
     setExpandedCallId(expandedCallId === callId ? null : callId);
   };
-
-  // Stats
-  const total = calls.length;
-  const completed = calls.filter((c) => c.status === 'completed').length;
-  const avgHold = calls.filter((c) => c.hold_duration_seconds).reduce((a, c) => a + (c.hold_duration_seconds ?? 0), 0) / (calls.filter((c) => c.hold_duration_seconds).length || 1);
 
   function exportCSV() {
     const rows = [
@@ -82,12 +92,20 @@ export default function CallLogsPage() {
     a.click();
   }
 
+  const goTo = (p: number) => {
+    if (p < 0 || p >= totalPages) return;
+    setPage(p);
+    setExpandedCallId(null);
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Call Logs</h1>
-          <p className="text-gray-400 text-sm mt-1">Full history of all outbound calls</p>
+          <p className="text-gray-400 text-sm mt-1">
+            {total > 0 ? `${total} total call${total !== 1 ? 's' : ''}` : 'Full history of all outbound calls'}
+          </p>
         </div>
         <button
           onClick={exportCSV}
@@ -100,24 +118,9 @@ export default function CallLogsPage() {
         </button>
       </div>
 
-      {/* Stats */}
-      <div className="px-8 py-5 grid grid-cols-4 gap-4 border-b border-gray-800">
-        {[
-          { label: 'Total Calls', value: total },
-          { label: 'Completed', value: completed },
-          { label: 'Success Rate', value: total ? `${Math.round((completed / total) * 100)}%` : '—' },
-          { label: 'Avg Hold Time', value: fmt(Math.round(avgHold)) },
-        ].map((stat) => (
-          <div key={stat.label} className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <p className="text-xs text-gray-500 uppercase tracking-wider">{stat.label}</p>
-            <p className="text-2xl font-bold text-white mt-1">{stat.value}</p>
-          </div>
-        ))}
-      </div>
-
       {/* Filter */}
       <div className="px-8 py-4 flex gap-2 border-b border-gray-800 flex-wrap">
-        {['', 'completed', 'connected', 'on_hold', 'failed', 'cancelled'].map((s) => (
+        {['', 'completed', 'connected', 'ai_conversation', 'on_hold', 'failed', 'cancelled'].map((s) => (
           <button
             key={s}
             onClick={() => setStatusFilter(s)}
@@ -125,7 +128,7 @@ export default function CallLogsPage() {
               statusFilter === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-700 text-gray-500 hover:text-gray-300'
             }`}
           >
-            {s === '' ? 'All' : s.replace('_', ' ')}
+            {s === '' ? 'All' : s.replace(/_/g, ' ')}
           </button>
         ))}
       </div>
@@ -168,7 +171,7 @@ export default function CallLogsPage() {
                     <td className="px-4 py-4 text-sm text-gray-400 font-mono">{call.cruise_line_number ?? '—'}</td>
                     <td className="px-4 py-4">
                       <span className={`text-xs px-2.5 py-1 rounded-full border ${STATUS_BADGE[call.status] ?? 'bg-gray-800 text-gray-400 border-gray-700'}`}>
-                        {call.status.replace('_', ' ')}
+                        {call.status.replace(/_/g, ' ')}
                       </span>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-400">{fmt(call.hold_duration_seconds)}</td>
@@ -232,6 +235,75 @@ export default function CallLogsPage() {
           </table>
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="px-8 py-4 border-t border-gray-800 flex items-center justify-between">
+          <p className="text-xs text-gray-500">
+            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => goTo(0)}
+              disabled={page === 0}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="First page"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(page - 1)}
+              disabled={page === 0}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Previous"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+
+            {/* Page number buttons — show at most 5 around current */}
+            {Array.from({ length: totalPages }, (_, i) => i)
+              .filter((i) => Math.abs(i - page) <= 2)
+              .map((i) => (
+                <button
+                  key={i}
+                  onClick={() => goTo(i)}
+                  className={`w-8 h-8 rounded-lg text-xs font-medium border transition-colors ${
+                    i === page
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'border-gray-700 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+
+            <button
+              onClick={() => goTo(page + 1)}
+              disabled={page >= totalPages - 1}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Next"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(totalPages - 1)}
+              disabled={page >= totalPages - 1}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Last page"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

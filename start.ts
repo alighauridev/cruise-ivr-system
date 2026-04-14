@@ -8,13 +8,32 @@
  * Run with: pnpm run start:dev
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 
 const ENV_FILE = path.resolve(__dirname, '.env.local');
 const LOCAL_PORT = 3003;
+
+/** Kill any process already listening on LOCAL_PORT so we can start fresh. */
+function killPortProcess() {
+  try {
+    // netstat finds the PID holding the port; works on Windows
+    const out = execSync(`netstat -ano | findstr :${LOCAL_PORT}`, { encoding: 'utf8', stdio: 'pipe' });
+    const lines = out.split('\n').filter((l) => l.includes('LISTENING'));
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[parts.length - 1];
+      if (pid && pid !== '0') {
+        try {
+          execSync(`taskkill /PID ${pid} /F`, { stdio: 'pipe' });
+          console.log(`[setup] Killed stale process PID ${pid} on port ${LOCAL_PORT}`);
+        } catch { /* already gone */ }
+      }
+    }
+  } catch { /* port is free, nothing to kill */ }
+}
 
 function updateEnvPublicUrl(url: string) {
   let content = fs.readFileSync(ENV_FILE, 'utf8');
@@ -139,14 +158,19 @@ async function warmupRoutes() {
   console.log('[setup] Routes warm — ready to place calls!\n');
 }
 
+const MAX_RESTARTS = 5;
+const RESTART_DELAY_MS = 3000;
+
 async function main() {
   let tunnelProc: ChildProcess | null = null;
-  let serverProc: ChildProcess | null = null;
+  let shuttingDown = false;
+  let restartCount = 0;
 
   const cleanup = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n[setup] Shutting down...');
     tunnelProc?.kill();
-    serverProc?.kill();
     process.exit(0);
   };
 
@@ -154,22 +178,46 @@ async function main() {
   process.on('SIGTERM', cleanup);
 
   try {
+    killPortProcess();
+
     const { url, proc: tProc } = await startTunnel();
     tunnelProc = tProc;
     updateEnvPublicUrl(url);
 
-    const { proc: sProc, waitForReady } = startDevServer();
-    serverProc = sProc;
-
-    sProc.on('exit', (code) => {
-      console.log(`[setup] Dev server exited (${code})`);
-      tunnelProc?.kill();
-      process.exit(code ?? 0);
+    tunnelProc.on('exit', (code) => {
+      if (!shuttingDown) {
+        console.error(`[setup] Tunnel exited unexpectedly (${code}) — shutting down`);
+        cleanup();
+      }
     });
 
-    // Wait for Next.js to print "Ready" before warming up routes
-    await waitForReady;
-    await warmupRoutes();
+    const launchServer = async () => {
+      const { proc: sProc, waitForReady } = startDevServer();
+
+      sProc.on('exit', (code) => {
+        if (shuttingDown) return;
+        restartCount++;
+        if (restartCount > MAX_RESTARTS) {
+          console.error(`[setup] Dev server crashed ${restartCount} times — giving up`);
+          cleanup();
+          return;
+        }
+        console.log(`\n[setup] Dev server exited (${code}) — restarting in ${RESTART_DELAY_MS / 1000}s (attempt ${restartCount}/${MAX_RESTARTS})...`);
+        setTimeout(launchServer, RESTART_DELAY_MS);
+      });
+
+      // Wait for Next.js to print "Ready" before warming up routes
+      await waitForReady;
+
+      // Warmup errors should never crash the process
+      try {
+        await warmupRoutes();
+      } catch (err) {
+        console.error('[setup] Warmup failed (non-fatal):', err);
+      }
+    };
+
+    await launchServer();
 
   } catch (err) {
     console.error('[setup] Error:', err);

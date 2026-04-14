@@ -9,29 +9,31 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const status = searchParams.get('status');
-  const limit = parseInt(searchParams.get('limit') ?? '50');
+  const limit = Math.min(parseInt(searchParams.get('limit') ?? '25'), 100);
   const offset = parseInt(searchParams.get('offset') ?? '0');
 
-  let rows;
-  if (status) {
-    rows = await sql`
-      SELECT c.*, l.name as lead_name, l.phone_number as lead_phone
-      FROM calls c
-      LEFT JOIN leads l ON l.id = c.lead_id
-      WHERE c.user_id = ${session.user.id} AND c.status = ${status}
-      ORDER BY c.created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `;
-  } else {
-    rows = await sql`
-      SELECT c.*, l.name as lead_name, l.phone_number as lead_phone
-      FROM calls c
-      LEFT JOIN leads l ON l.id = c.lead_id
-      WHERE c.user_id = ${session.user.id}
-      ORDER BY c.created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `;
-  }
+  const [rows, countRows] = await Promise.all([
+    status
+      ? sql`
+          SELECT c.*, l.name as lead_name, l.phone_number as lead_phone
+          FROM calls c
+          LEFT JOIN leads l ON l.id = c.lead_id
+          WHERE c.user_id = ${session.user.id} AND c.status = ${status}
+          ORDER BY c.created_at DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `
+      : sql`
+          SELECT c.*, l.name as lead_name, l.phone_number as lead_phone
+          FROM calls c
+          LEFT JOIN leads l ON l.id = c.lead_id
+          WHERE c.user_id = ${session.user.id}
+          ORDER BY c.created_at DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `,
+    status
+      ? sql`SELECT COUNT(*)::int AS total FROM calls WHERE user_id = ${session.user.id} AND status = ${status}`
+      : sql`SELECT COUNT(*)::int AS total FROM calls WHERE user_id = ${session.user.id}`,
+  ]);
 
-  return NextResponse.json({ calls: rows });
+  return NextResponse.json({ calls: rows, total: countRows[0]?.total ?? 0, limit, offset });
 }

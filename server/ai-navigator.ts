@@ -85,10 +85,11 @@ export async function detectAgentWithAI(
           role: 'system',
           content: `You detect if a LIVE HUMAN agent has answered a cruise line phone call. Respond ONLY with "YES" or "NO".
 
-YES = real human: said their personal name ("This is Sarah", "My name is Chen"), greeted you personally and is waiting for YOUR response.
-NO = any of these: IVR menu, hold music, recorded message, virtual assistant, AI bot, automated system, or anything that says "virtual assistant", "automated", "AI", "designed to help", "press 1", "please hold".
+YES = live human agent: introduced themselves by name ("This is Shaniqua", "My name is Sarah"), offered help personally ("How may I assist you today?", "How can I help?"), or is asking YOU a follow-up question expecting a real human response.
+NO = IVR menu, hold music, recorded/automated message, virtual assistant, AI bot, or anything instructing you to press a digit or hold.
 
-Be conservative — when in doubt say NO. A virtual assistant saying "How can I help you?" is still NO.`,
+Key signals for YES: personal name, direct greeting to the caller, or a follow-up question after initial greeting ("Hello?", "Are you still there?").
+Key signals for NO: "press 1", "please hold", "your estimated wait time", "automated", "virtual assistant".`,
         },
         {
           role: 'user',
