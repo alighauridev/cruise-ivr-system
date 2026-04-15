@@ -678,13 +678,6 @@ export default function AgentPage() {
                   {/* Action buttons */}
                   <div className="flex gap-2">
                     <button
-                      onClick={handleAiRespond}
-                      disabled={convAiLoading}
-                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                    >
-                      {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
-                    </button>
-                    <button
                       onClick={handleTransfer}
                       className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
                     >
