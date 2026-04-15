@@ -595,15 +595,6 @@ export default function AgentPage() {
                 </div>
               )}
 
-              {/* Agent detected alert */}
-              {activeCall.status === 'agent_detected' && (
-                <div className="bg-green-900/50 border border-green-700 rounded-xl p-4 mb-6">
-                  <p className="text-green-300 font-semibold">A live agent has answered!</p>
-                  <p className="text-green-400/70 text-sm mt-1">
-                    An SMS notification has been sent. Click Connect to bridge the call.
-                  </p>
-                </div>
-              )}
 
               {/* Manual DTMF keypad — visible during IVR navigation and hold */}
               {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
@@ -652,18 +643,15 @@ export default function AgentPage() {
 
               <div className="flex-1" />
 
-              {/* AI Conversation Panel — shown in ai_conversation mode AND agent_detected (simple flow) */}
-              {['ai_conversation', 'agent_detected'].includes(activeCall.status) && (
+              {/* AI Conversation Panel */}
+              {activeCall.status === 'ai_conversation' && (
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full animate-pulse ${activeCall.status === 'ai_conversation' ? 'bg-purple-500' : 'bg-green-500'}`} />
-                    <p className={`text-xs font-semibold uppercase tracking-wider ${activeCall.status === 'ai_conversation' ? 'text-purple-400' : 'text-green-400'}`}>
-                      {activeCall.status === 'ai_conversation' ? 'AI Handling Conversation' : 'Agent Connected — Type to Speak'}
-                    </p>
+                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                    <p className="text-xs font-semibold text-purple-400 uppercase tracking-wider">AI Handling Conversation</p>
                   </div>
 
-                  {/* Chat messages — only in AI mode */}
-                  {activeCall.status === 'ai_conversation' && (
+                  {/* Chat messages */}
                   <div className="bg-black/20 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-2">
                     {convMessages.length === 0 ? (
                       <p className="text-gray-600 text-xs text-center mt-6">Waiting for cruise agent to speak...</p>
@@ -671,7 +659,7 @@ export default function AgentPage() {
                       convMessages.map((msg) => (
                         <div key={msg.id} className={`flex flex-col ${msg.speaker === 'us' ? 'items-end' : 'items-start'}`}>
                           <span className="text-xs text-gray-600 mb-0.5">
-                            {msg.speaker === 'us' ? 'AI / You' : 'Cruise Agent'} ·{' '}
+                            {msg.speaker === 'us' ? 'AI' : 'Cruise Agent'} ·{' '}
                             {new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                           </span>
                           <div className={`max-w-xs px-3 py-2 rounded-xl text-xs leading-relaxed ${
@@ -686,44 +674,45 @@ export default function AgentPage() {
                     )}
                     <div ref={convEndRef} />
                   </div>
-                  )}
-
-                  {/* Manual text input */}
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="Type a message to speak..."
-                      value={convInput}
-                      onChange={(e) => setConvInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleConvSpeak()}
-                      disabled={convSending}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
-                    />
-                    <button
-                      onClick={handleConvSpeak}
-                      disabled={!convInput.trim() || convSending}
-                      className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
-                    >
-                      Send
-                    </button>
-                  </div>
 
                   {/* Action buttons */}
                   <div className="flex gap-2">
-                    {activeCall.status === 'ai_conversation' && (
-                      <button
-                        onClick={handleAiRespond}
-                        disabled={convAiLoading}
-                        className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                      >
-                        {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
-                      </button>
-                    )}
+                    <button
+                      onClick={handleAiRespond}
+                      disabled={convAiLoading}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
+                    </button>
                     <button
                       onClick={handleTransfer}
                       className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
                     >
-                      {activeCall.status === 'ai_conversation' ? 'Transfer to Me' : 'Connect Now'}
+                      Transfer to Me
+                    </button>
+                    <button
+                      onClick={handleEndCall}
+                      className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      End Call
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Agent detected — simple flow (no AI task) */}
+              {activeCall.status === 'agent_detected' && (
+                <div className="space-y-3">
+                  <div className="bg-green-900/50 border border-green-700 rounded-xl p-4">
+                    <p className="text-green-300 font-semibold">A live agent has answered!</p>
+                    <p className="text-green-400/70 text-sm mt-1">An SMS notification has been sent. Click Connect to bridge the call.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleTransfer}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                    >
+                      Connect Now
                     </button>
                     <button
                       onClick={handleEndCall}
