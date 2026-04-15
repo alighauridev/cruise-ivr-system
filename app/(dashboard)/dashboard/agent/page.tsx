@@ -652,15 +652,18 @@ export default function AgentPage() {
 
               <div className="flex-1" />
 
-              {/* AI Conversation Panel */}
-              {activeCall.status === 'ai_conversation' && (
+              {/* AI Conversation Panel — shown in ai_conversation mode AND agent_detected (simple flow) */}
+              {['ai_conversation', 'agent_detected'].includes(activeCall.status) && (
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                    <p className="text-xs font-semibold text-purple-400 uppercase tracking-wider">AI Handling Conversation</p>
+                    <span className={`w-2 h-2 rounded-full animate-pulse ${activeCall.status === 'ai_conversation' ? 'bg-purple-500' : 'bg-green-500'}`} />
+                    <p className={`text-xs font-semibold uppercase tracking-wider ${activeCall.status === 'ai_conversation' ? 'text-purple-400' : 'text-green-400'}`}>
+                      {activeCall.status === 'ai_conversation' ? 'AI Handling Conversation' : 'Agent Connected — Type to Speak'}
+                    </p>
                   </div>
 
-                  {/* Chat messages */}
+                  {/* Chat messages — only in AI mode */}
+                  {activeCall.status === 'ai_conversation' && (
                   <div className="bg-black/20 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-2">
                     {convMessages.length === 0 ? (
                       <p className="text-gray-600 text-xs text-center mt-6">Waiting for cruise agent to speak...</p>
@@ -683,6 +686,7 @@ export default function AgentPage() {
                     )}
                     <div ref={convEndRef} />
                   </div>
+                  )}
 
                   {/* Manual text input */}
                   <div className="flex gap-2">
@@ -706,18 +710,20 @@ export default function AgentPage() {
 
                   {/* Action buttons */}
                   <div className="flex gap-2">
-                    <button
-                      onClick={handleAiRespond}
-                      disabled={convAiLoading}
-                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                    >
-                      {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
-                    </button>
+                    {activeCall.status === 'ai_conversation' && (
+                      <button
+                        onClick={handleAiRespond}
+                        disabled={convAiLoading}
+                        className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                      >
+                        {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
+                      </button>
+                    )}
                     <button
                       onClick={handleTransfer}
                       className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
                     >
-                      Transfer to Me
+                      {activeCall.status === 'ai_conversation' ? 'Transfer to Me' : 'Connect Now'}
                     </button>
                     <button
                       onClick={handleEndCall}
@@ -729,26 +735,16 @@ export default function AgentPage() {
                 </div>
               )}
 
-              {/* Action buttons (non-AI-conversation statuses) */}
-              {activeCall.status !== 'ai_conversation' && (
-              <div className="flex gap-3">
-                {activeCall.status === 'agent_detected' && (
-                  <button
-                    onClick={handleTransfer}
-                    className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors"
-                  >
-                    Connect Now
-                  </button>
-                )}
-                {isLiveStatus && !['connected'].includes(activeCall.status) && (
+              {/* End Call button for statuses not handled by the panels above */}
+              {!['ai_conversation', 'agent_detected'].includes(activeCall.status) && isLiveStatus && !['connected'].includes(activeCall.status) && (
+                <div className="flex gap-3">
                   <button
                     onClick={handleEndCall}
                     className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-3 rounded-xl transition-colors"
                   >
                     End Call
                   </button>
-                )}
-              </div>
+                </div>
               )}
             </div>
           ) : (
