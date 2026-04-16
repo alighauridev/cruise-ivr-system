@@ -9,16 +9,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { leadId, transferNumber, ivrConfigId, aiTask } = await req.json();
+  const { leadId, transferNumber, ivrConfigId, aiTask, viewAs } = await req.json();
   if (!leadId) {
     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
   }
+
+  // Admin can place calls on behalf of another user
+  const effectiveUserId = viewAs ?? session.user.id;
 
   const leads = await sql`
     SELECT l.*, ic.steps, ic.id as ivr_config_id
     FROM leads l
     LEFT JOIN ivr_configs ic ON ic.id = l.ivr_config_id
-    WHERE l.id = ${leadId} AND l.user_id = ${session.user.id}
+    WHERE l.id = ${leadId} AND l.user_id = ${effectiveUserId}
     LIMIT 1
   `;
 
@@ -32,7 +35,7 @@ export async function POST(req: NextRequest) {
   let ivrSteps = lead.steps;
   let resolvedIvrConfigId = lead.ivr_config_id as string | null;
   if (ivrConfigId && ivrConfigId !== lead.ivr_config_id) {
-    const cfgRows = await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} AND user_id = ${session.user.id} LIMIT 1`;
+    const cfgRows = await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} AND user_id = ${effectiveUserId} LIMIT 1`;
     if (cfgRows.length > 0) {
       ivrSteps = cfgRows[0].steps;
       resolvedIvrConfigId = cfgRows[0].id as string;
@@ -53,7 +56,7 @@ export async function POST(req: NextRequest) {
 
   const callRows = await sql`
     INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task)
-    VALUES (${session.user.id}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTask ?? null})
+    VALUES (${effectiveUserId}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTask ?? null})
     RETURNING id
   `;
   const callId = callRows[0].id as string;

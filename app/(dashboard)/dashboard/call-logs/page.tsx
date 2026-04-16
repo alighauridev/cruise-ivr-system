@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useUserView } from '@/lib/user-view-context';
 
 interface Call {
   id: string;
@@ -53,22 +54,24 @@ export default function CallLogsPage() {
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const { viewAsParam } = useUserView();
 
   const load = useCallback(async (p: number, status: string) => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
     if (status) params.set('status', status);
+    if (viewAsParam) params.set('viewAs', new URLSearchParams(viewAsParam).get('viewAs') ?? '');
     const r = await fetch(`/api/calls?${params}`);
     const d = await r.json();
     setCalls(d.calls ?? []);
     setTotal(d.total ?? 0);
     setLoading(false);
-  }, []);
+  }, [viewAsParam]);
 
   useEffect(() => {
     setPage(0);
     load(0, statusFilter);
-  }, [statusFilter, load]);
+  }, [statusFilter, viewAsParam, load]);
 
   useEffect(() => {
     load(page, statusFilter);

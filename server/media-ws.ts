@@ -11,8 +11,8 @@ import { IVRExecutor, ExecutorAction } from './ivr-executor';
 import { IVRStep } from '@/lib/ivr-engine';
 import sql from '@/lib/db';
 
-const MAX_CALL_DURATION_MS = 20 * 60 * 1000; // 20 minutes
-const DG_RETRY_DELAYS = [500, 1500, 4000];
+const MAX_CALL_DURATION_MS = 90 * 60 * 1000; // 90 minutes
+const DG_RETRY_DELAYS = [500, 1500, 4000, 8000, 15000, 30000]; // 6 retries with backoff
 
 /**
  * Module-level session map so IVR executor state survives WebSocket reconnections.
@@ -484,6 +484,19 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
 
     if (state.ivrExecutor.isInHoldMode()) {
       await checkHoldStatus(state);
+
+      // Detect "press X to stay on hold / continue holding" and respond automatically
+      const stayOnHoldMatch =
+        transcript.match(/press\s+(\d+)\s+to\s+(?:stay|continue|remain|keep)/i) ||
+        transcript.match(/press\s+(\d+)\s+(?:if you|to hold)/i) ||
+        transcript.match(/press\s+(\d+)\s+(?:and we|to be called|for a callback)/i);
+      if (stayOnHoldMatch) {
+        const digit = stayOnHoldMatch[1];
+        console.log(`[IVR] Stay-on-hold prompt detected ("${transcript.substring(0, 60)}") — pressing ${digit}`);
+        await dispatchAction(state, { type: 'PRESS', digit }).catch(() => {});
+        return;
+      }
+
       if (transcript.split(' ').length >= 10) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);

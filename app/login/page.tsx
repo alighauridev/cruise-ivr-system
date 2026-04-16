@@ -22,7 +22,7 @@ function LoginForm() {
     e.preventDefault();
     setLoading(true);
     setError('');
-    await signIn('credentials', { email, password, callbackUrl: '/dashboard/agent' });
+    await signIn('credentials', { email, password, callbackUrl: '/select-profile' });
   }
 
   return (

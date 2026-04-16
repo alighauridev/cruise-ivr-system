@@ -113,7 +113,6 @@ export default function AgentPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const convEndRef = useRef<HTMLDivElement>(null);
-
   // Load leads, IVR configs, and transfer numbers
   useEffect(() => {
     fetch('/api/leads')
