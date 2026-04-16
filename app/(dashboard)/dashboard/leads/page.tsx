@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useUserView } from '@/lib/user-view-context';
 
 interface Directory {
   id: string;
@@ -39,10 +38,8 @@ export default function LeadsPage() {
   const [leadForm, setLeadForm] = useState({ name: '', phone_number: '', category: '', notes: '', ivr_config_id: '' });
   const [loading, setLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const { viewAsParam } = useUserView();
-
   const loadDirectories = async () => {
-    const r = await fetch(`/api/directories${viewAsParam ? '?' + viewAsParam : ''}`);
+    const r = await fetch('/api/directories');
     const d = await r.json();
     setDirectories(d.directories ?? []);
     if (d.directories?.length > 0 && !selectedDir) {
@@ -54,7 +51,6 @@ export default function LeadsPage() {
     const params = new URLSearchParams();
     if (selectedDir) params.set('directoryId', selectedDir);
     if (search) params.set('search', search);
-    if (viewAsParam) params.set('viewAs', new URLSearchParams(viewAsParam).get('viewAs') ?? '');
     const r = await fetch(`/api/leads?${params}`);
     const d = await r.json();
     setLeads(d.leads ?? []);
@@ -63,9 +59,9 @@ export default function LeadsPage() {
   useEffect(() => {
     setSelectedDir('');
     loadDirectories();
-    fetch(`/api/ivr-configs${viewAsParam ? '?' + viewAsParam : ''}`).then(r => r.json()).then(d => setIvrConfigs(d.configs ?? []));
-  }, [viewAsParam]);
-  useEffect(() => { if (selectedDir || search) loadLeads(); }, [selectedDir, search, viewAsParam]);
+    fetch('/api/ivr-configs').then(r => r.json()).then(d => setIvrConfigs(d.configs ?? []));
+  }, []);
+  useEffect(() => { if (selectedDir || search) loadLeads(); }, [selectedDir, search]);
 
   async function saveDirectory() {
     setLoading(true);
