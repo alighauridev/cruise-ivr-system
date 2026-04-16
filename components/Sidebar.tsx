@@ -1,12 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { signOut, useSession } from 'next-auth/react';
+import { usePathname } from 'next/navigation';
+import { signOut } from 'next-auth/react';
 
 interface SidebarProps {
-  user: { name?: string | null; email?: string | null; id?: string };
-  isAdmin?: boolean;
+  user: { name?: string | null; email?: string | null };
 }
 
 const navItems = [
@@ -58,11 +57,8 @@ const navItems = [
   },
 ];
 
-export default function Sidebar({ user, isAdmin }: SidebarProps) {
+export default function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname();
-  const router = useRouter();
-  const { data: session, update } = useSession();
-  const impersonating = (session?.user as { impersonating?: boolean })?.impersonating ?? false;
 
   return (
     <aside className="w-64 flex flex-col bg-gray-900 border-r border-gray-800 h-full">
@@ -81,20 +77,6 @@ export default function Sidebar({ user, isAdmin }: SidebarProps) {
         </div>
       </div>
 
-      {/* Impersonation banner */}
-      {impersonating && (
-        <div className="mx-2 mt-2 bg-purple-900/40 border border-purple-700/60 rounded-xl px-3 py-2">
-          <p className="text-purple-400 text-xs font-semibold mb-1">Logged in as client</p>
-          <p className="text-purple-300 text-xs truncate">{user.name}</p>
-          <button
-            onClick={async () => { await update({ impersonatedUserId: null }); router.push('/select-profile'); }}
-            className="mt-1.5 text-xs text-purple-500 hover:text-purple-300 underline"
-          >
-            Switch profile
-          </button>
-        </div>
-      )}
-
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1">
         {navItems.map((item) => {
@@ -104,7 +86,9 @@ export default function Sidebar({ user, isAdmin }: SidebarProps) {
               key={item.href}
               href={item.href}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                active
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
               }`}
             >
               {item.icon}
@@ -112,18 +96,7 @@ export default function Sidebar({ user, isAdmin }: SidebarProps) {
             </Link>
           );
         })}
-
       </nav>
-
-      {/* Switch profile link for admins */}
-      {isAdmin && !impersonating && (
-        <div className="px-3 pb-2">
-          <Link href="/select-profile" className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-500 hover:text-white hover:bg-gray-800 transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
-            Switch Profile
-          </Link>
-        </div>
-      )}
 
       {/* User footer */}
       <div className="px-4 py-4 border-t border-gray-800">
