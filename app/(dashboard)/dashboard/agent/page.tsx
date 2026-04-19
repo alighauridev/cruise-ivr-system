@@ -595,8 +595,8 @@ export default function AgentPage() {
               )}
 
 
-              {/* Manual DTMF keypad — visible during IVR navigation and hold */}
-              {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
+              {/* Manual DTMF keypad — IVR navigation phase only */}
+              {activeCall.status === 'navigating_ivr' && (
                 <div className="bg-black/20 rounded-xl p-4 mb-4 space-y-3">
                   <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Manual Keypad</p>
 
@@ -640,8 +640,8 @@ export default function AgentPage() {
                 </div>
               )}
 
-              {/* Type to Speak — visible during any active call */}
-              {isLiveStatus && (
+              {/* Type to Speak — visible when agent is reachable (not during IVR nav) */}
+              {isLiveStatus && !['navigating_ivr', 'ai_conversation'].includes(activeCall.status) && (
                 <div className="bg-black/20 rounded-xl p-4 mb-4 space-y-2">
                   <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Type to Speak</p>
                   <div className="flex gap-2">
