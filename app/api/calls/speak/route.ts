@@ -23,12 +23,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Call has ended' }, { status: 400 });
   }
 
-  // In AI conversation mode: try Realtime first so AI speaks naturally.
-  if (rows[0].status === 'ai_conversation' && injectRealtimeInstruction(callId, text.trim())) {
-    return NextResponse.json({ ok: true, mode: 'realtime' });
-  }
-
-  // All other statuses (navigating_ivr, on_hold, agent_detected, connected): direct TTS.
+  // Always inject typed text as direct TTS — speak exact words, not AI paraphrase.
   const result = await injectTTSIntoCall(callId, text.trim());
   if (!result.ok) {
     return NextResponse.json({ error: `Session unavailable: ${result.reason}` }, { status: 503 });

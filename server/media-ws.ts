@@ -717,6 +717,8 @@ export async function injectTTSIntoCall(callId: string, text: string): Promise<{
   if (!state.twilioWs || state.twilioWs.readyState !== WebSocket.OPEN) {
     return { ok: false, reason: `Twilio WS readyState=${state.twilioWs?.readyState ?? 'null'}` };
   }
+  // Clear any buffered audio (e.g. OpenAI RT chunks) so TTS plays immediately
+  state.twilioWs.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
   await dispatchConversationSay(state, text);
   return { ok: true };
 }
