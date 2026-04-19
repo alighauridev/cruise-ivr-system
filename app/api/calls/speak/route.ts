@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
-import { injectRealtimeInstruction, injectTTSIntoCall } from '@/server/media-ws';
+import { injectExactSpeech, injectTTSIntoCall } from '@/server/media-ws';
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -23,7 +23,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Call has ended' }, { status: 400 });
   }
 
-  // Always inject typed text as direct TTS — speak exact words, not AI paraphrase.
+  // In AI conversation mode: use OpenAI Realtime so voice matches the AI agent.
+  // Cancels any in-progress response first to prevent audio collision.
+  if (rows[0].status === 'ai_conversation' && injectExactSpeech(callId, text.trim())) {
+    return NextResponse.json({ ok: true, mode: 'realtime' });
+  }
+
+  // Other statuses (on_hold, agent_detected, connected): direct TTS.
   const result = await injectTTSIntoCall(callId, text.trim());
   if (!result.ok) {
     return NextResponse.json({ error: `Session unavailable: ${result.reason}` }, { status: 503 });

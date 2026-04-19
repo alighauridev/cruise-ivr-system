@@ -751,6 +751,33 @@ export function injectRealtimeInstruction(callId: string, instruction: string): 
   return true;
 }
 
+/**
+ * Speak exact typed text using OpenAI Realtime (same voice as AI agent).
+ * Cancels any in-progress response first to prevent audio collision.
+ */
+export function injectExactSpeech(callId: string, text: string): boolean {
+  const state = callSessions.get(callId);
+  if (!state?.openaiRtWs || state.openaiRtWs.readyState !== WebSocket.OPEN) return false;
+  if (state.isTerminated) return false;
+
+  const rtWs = state.openaiRtWs;
+  // Cancel current response + clear Twilio buffer to prevent overlap
+  rtWs.send(JSON.stringify({ type: 'response.cancel' }));
+  if (state.twilioWs?.readyState === WebSocket.OPEN) {
+    state.twilioWs.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
+  }
+  // Force speaking the exact text
+  rtWs.send(JSON.stringify({
+    type: 'response.create',
+    response: {
+      instructions: `Say EXACTLY these words verbatim, nothing more: "${text}"`,
+      modalities: ['audio', 'text'],
+    },
+  }));
+  console.log(`[OpenAI RT] Exact speech injected callId=${callId}: "${text.substring(0, 60)}"`);
+  return true;
+}
+
 export function getConversationHistory(callId: string): ConvTurn[] | null {
   const state = callSessions.get(callId);
   if (!state || !state.aiConversationMode) return null;
@@ -1011,9 +1038,9 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
         input_audio_transcription: { model: 'whisper-1' },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.5,
+          threshold: 0.65,
           prefix_padding_ms: 300,
-          silence_duration_ms: 700,
+          silence_duration_ms: 1500,
         },
       },
     }));
