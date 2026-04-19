@@ -699,6 +699,25 @@ export default function AgentPage() {
                     <div ref={convEndRef} />
                   </div>
 
+                  {/* Type to speak */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={convInput}
+                      onChange={(e) => setConvInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleConvSpeak(); } }}
+                      placeholder="Type to speak on the call..."
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                    />
+                    <button
+                      onClick={handleConvSpeak}
+                      disabled={convSending || !convInput.trim()}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white font-semibold rounded-xl text-sm transition-colors"
+                    >
+                      {convSending ? '...' : 'Speak'}
+                    </button>
+                  </div>
+
                   {/* Action buttons */}
                   <div className="flex gap-2">
                     <button
