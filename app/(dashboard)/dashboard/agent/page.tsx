@@ -640,6 +640,31 @@ export default function AgentPage() {
                 </div>
               )}
 
+              {/* Type to Speak — visible during any active call */}
+              {isLiveStatus && (
+                <div className="bg-black/20 rounded-xl p-4 mb-4 space-y-2">
+                  <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Type to Speak</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={convInput}
+                      onChange={(e) => setConvInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleConvSpeak(); } }}
+                      placeholder="Type anything — plays as voice on the call..."
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={handleConvSpeak}
+                      disabled={convSending || !convInput.trim()}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-semibold rounded-xl text-sm transition-colors"
+                    >
+                      {convSending ? '...' : 'Speak'}
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-600">Plays as your voice directly to the cruise line agent</p>
+                </div>
+              )}
+
               <div className="flex-1" />
 
               {/* AI Conversation Panel */}

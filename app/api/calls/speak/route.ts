@@ -12,22 +12,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'callId and text required' }, { status: 400 });
   }
 
+  const TERMINAL = ['completed', 'failed', 'cancelled'];
   const rows = await sql`
     SELECT id, status FROM calls
     WHERE id = ${callId} AND user_id = ${session.user.id}
     LIMIT 1
   `;
   if (rows.length === 0) return NextResponse.json({ error: 'Call not found' }, { status: 404 });
-  if (rows[0].status !== 'ai_conversation') {
-    return NextResponse.json({ error: `Call is not in ai_conversation mode (status=${rows[0].status})` }, { status: 400 });
+  if (TERMINAL.includes(rows[0].status as string)) {
+    return NextResponse.json({ error: 'Call has ended' }, { status: 400 });
   }
 
-  // Primary: send as instruction to OpenAI Realtime — AI responds naturally.
-  if (injectRealtimeInstruction(callId, text.trim())) {
+  // In AI conversation mode: try Realtime first so AI speaks naturally.
+  if (rows[0].status === 'ai_conversation' && injectRealtimeInstruction(callId, text.trim())) {
     return NextResponse.json({ ok: true, mode: 'realtime' });
   }
 
-  // Fallback: direct TTS injection via Deepgram pipeline.
+  // All other statuses (navigating_ivr, on_hold, agent_detected, connected): direct TTS.
   const result = await injectTTSIntoCall(callId, text.trim());
   if (!result.ok) {
     return NextResponse.json({ error: `Session unavailable: ${result.reason}` }, { status: 503 });

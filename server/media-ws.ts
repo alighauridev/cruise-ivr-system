@@ -714,7 +714,6 @@ export async function injectTTSIntoCall(callId: string, text: string): Promise<{
   const state = callSessions.get(callId);
   if (!state) return { ok: false, reason: `callId not in sessions (map size=${callSessions.size})` };
   if (state.isTerminated) return { ok: false, reason: 'call terminated' };
-  if (!state.aiConversationMode) return { ok: false, reason: 'not in ai_conversation mode' };
   if (!state.twilioWs || state.twilioWs.readyState !== WebSocket.OPEN) {
     return { ok: false, reason: `Twilio WS readyState=${state.twilioWs?.readyState ?? 'null'}` };
   }
