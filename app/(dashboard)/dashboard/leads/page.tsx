@@ -38,6 +38,7 @@ export default function LeadsPage() {
   const [leadForm, setLeadForm] = useState({ name: '', phone_number: '', category: '', notes: '', ivr_config_id: '' });
   const [loading, setLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
   const loadDirectories = async () => {
     const r = await fetch('/api/directories');
     const d = await r.json();
@@ -57,7 +58,6 @@ export default function LeadsPage() {
   };
 
   useEffect(() => {
-    setSelectedDir('');
     loadDirectories();
     fetch('/api/ivr-configs').then(r => r.json()).then(d => setIvrConfigs(d.configs ?? []));
   }, []);

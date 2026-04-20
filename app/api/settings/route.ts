@@ -2,13 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const viewAs = new URL(req.url).searchParams.get('viewAs') ?? session.user.id;
-  const user = await sql`SELECT * FROM users WHERE id = ${viewAs} LIMIT 1`;
-  const settings = await sql`SELECT key, value FROM settings WHERE user_id = ${viewAs}`;
+  const user = await sql`SELECT * FROM users WHERE id = ${session.user.id} LIMIT 1`;
+  const settings = await sql`SELECT key, value FROM settings WHERE user_id = ${session.user.id}`;
 
   const settingsMap: Record<string, string> = {};
   for (const s of settings) settingsMap[s.key as string] = s.value as string;

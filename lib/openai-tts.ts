@@ -23,7 +23,7 @@ export async function generateTTS(text: string): Promise<Buffer> {
 
   const response = await openai.audio.speech.create({
     model: 'tts-1',
-    voice: 'coral',
+    voice: 'nova',
     input: text,
     response_format: 'mp3',
   });
@@ -67,7 +67,7 @@ export async function streamTTSMulaw(
 
   const response = await openai.audio.speech.create({
     model: 'tts-1',
-    voice: 'coral',
+    voice: 'nova',
     input: text,
     response_format: 'pcm',
   });
@@ -154,7 +154,7 @@ export async function generateTTSMulaw(text: string): Promise<Buffer> {
   // Get raw PCM from OpenAI: 24kHz, 16-bit signed LE, mono
   const response = await openai.audio.speech.create({
     model: 'tts-1',
-    voice: 'coral',
+    voice: 'nova',
     input: text,
     response_format: 'pcm',
   });

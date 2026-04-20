@@ -11,8 +11,8 @@ import { IVRExecutor, ExecutorAction } from './ivr-executor';
 import { IVRStep } from '@/lib/ivr-engine';
 import sql from '@/lib/db';
 
-const MAX_CALL_DURATION_MS = 90 * 60 * 1000; // 90 minutes
-const DG_RETRY_DELAYS = [500, 1500, 4000, 8000, 15000, 30000]; // 6 retries with backoff
+const MAX_CALL_DURATION_MS = 20 * 60 * 1000; // 20 minutes
+const DG_RETRY_DELAYS = [500, 1500, 4000];
 
 /**
  * Module-level session map so IVR executor state survives WebSocket reconnections.
@@ -484,19 +484,6 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
 
     if (state.ivrExecutor.isInHoldMode()) {
       await checkHoldStatus(state);
-
-      // Detect "press X to stay on hold / continue holding" and respond automatically
-      const stayOnHoldMatch =
-        transcript.match(/press\s+(\d+)\s+to\s+(?:stay|continue|remain|keep)/i) ||
-        transcript.match(/press\s+(\d+)\s+(?:if you|to hold)/i) ||
-        transcript.match(/press\s+(\d+)\s+(?:and we|to be called|for a callback)/i);
-      if (stayOnHoldMatch) {
-        const digit = stayOnHoldMatch[1];
-        console.log(`[IVR] Stay-on-hold prompt detected ("${transcript.substring(0, 60)}") — pressing ${digit}`);
-        await dispatchAction(state, { type: 'PRESS', digit }).catch(() => {});
-        return;
-      }
-
       if (transcript.split(' ').length >= 10) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);
@@ -714,11 +701,10 @@ export async function injectTTSIntoCall(callId: string, text: string): Promise<{
   const state = callSessions.get(callId);
   if (!state) return { ok: false, reason: `callId not in sessions (map size=${callSessions.size})` };
   if (state.isTerminated) return { ok: false, reason: 'call terminated' };
+  if (!state.aiConversationMode) return { ok: false, reason: 'not in ai_conversation mode' };
   if (!state.twilioWs || state.twilioWs.readyState !== WebSocket.OPEN) {
     return { ok: false, reason: `Twilio WS readyState=${state.twilioWs?.readyState ?? 'null'}` };
   }
-  // Clear any buffered audio (e.g. OpenAI RT chunks) so TTS plays immediately
-  state.twilioWs.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
   await dispatchConversationSay(state, text);
   return { ok: true };
 }
@@ -748,33 +734,6 @@ export function injectRealtimeInstruction(callId: string, instruction: string): 
   }));
   state.openaiRtWs.send(JSON.stringify({ type: 'response.create' }));
   console.log(`[OpenAI RT] Instruction injected callId=${callId}: "${instruction.substring(0, 60)}"`);
-  return true;
-}
-
-/**
- * Speak exact typed text using OpenAI Realtime (same voice as AI agent).
- * Cancels any in-progress response first to prevent audio collision.
- */
-export function injectExactSpeech(callId: string, text: string): boolean {
-  const state = callSessions.get(callId);
-  if (!state?.openaiRtWs || state.openaiRtWs.readyState !== WebSocket.OPEN) return false;
-  if (state.isTerminated) return false;
-
-  const rtWs = state.openaiRtWs;
-  // Cancel current response + clear Twilio buffer to prevent overlap
-  rtWs.send(JSON.stringify({ type: 'response.cancel' }));
-  if (state.twilioWs?.readyState === WebSocket.OPEN) {
-    state.twilioWs.send(JSON.stringify({ event: 'clear', streamSid: state.streamSid }));
-  }
-  // Force speaking the exact text
-  rtWs.send(JSON.stringify({
-    type: 'response.create',
-    response: {
-      instructions: `Say EXACTLY these words verbatim, nothing more: "${text}"`,
-      modalities: ['audio', 'text'],
-    },
-  }));
-  console.log(`[OpenAI RT] Exact speech injected callId=${callId}: "${text.substring(0, 60)}"`);
   return true;
 }
 
@@ -1038,9 +997,9 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
         input_audio_transcription: { model: 'whisper-1' },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.65,
+          threshold: 0.5,
           prefix_padding_ms: 300,
-          silence_duration_ms: 1500,
+          silence_duration_ms: 700,
         },
       },
     }));

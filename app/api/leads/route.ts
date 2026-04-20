@@ -8,14 +8,13 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const directoryId = searchParams.get('directoryId');
   const search = searchParams.get('search');
-  const viewAs = searchParams.get('viewAs') ?? session.user.id;
 
   let rows;
   if (directoryId && search) {
     rows = await sql`
       SELECT l.*, d.name as directory_name
       FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${viewAs} AND l.directory_id = ${directoryId}
+      WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
         AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
       ORDER BY l.name
     `;
@@ -23,14 +22,14 @@ export async function GET(req: NextRequest) {
     rows = await sql`
       SELECT l.*, d.name as directory_name
       FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${viewAs} AND l.directory_id = ${directoryId}
+      WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
       ORDER BY l.name
     `;
   } else if (search) {
     rows = await sql`
       SELECT l.*, d.name as directory_name
       FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${viewAs}
+      WHERE l.user_id = ${session.user.id}
         AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
       ORDER BY l.name
     `;
@@ -38,7 +37,7 @@ export async function GET(req: NextRequest) {
     rows = await sql`
       SELECT l.*, d.name as directory_name
       FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${viewAs}
+      WHERE l.user_id = ${session.user.id}
       ORDER BY d.name, l.name
     `;
   }

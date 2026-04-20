@@ -1,17 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
-export async function GET(req: NextRequest) {
+export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const viewAs = new URL(req.url).searchParams.get('viewAs') ?? session.user.id;
 
   const rows = await sql`
     SELECT d.*, COUNT(l.id)::INTEGER as lead_count
     FROM directories d
     LEFT JOIN leads l ON l.directory_id = d.id
-    WHERE d.user_id = ${viewAs}
+    WHERE d.user_id = ${session.user.id}
     GROUP BY d.id
     ORDER BY d.name
   `;

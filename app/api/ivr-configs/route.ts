@@ -7,12 +7,11 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const leadId = searchParams.get('leadId');
-  const viewAs = searchParams.get('viewAs') ?? session.user.id;
 
   let rows;
   if (leadId) {
     rows = await sql`
-      SELECT * FROM ivr_configs WHERE user_id = ${viewAs} AND lead_id = ${leadId}
+      SELECT * FROM ivr_configs WHERE user_id = ${session.user.id} AND lead_id = ${leadId}
       ORDER BY created_at DESC
     `;
   } else {
@@ -20,7 +19,7 @@ export async function GET(req: NextRequest) {
       SELECT ic.*, l.name as lead_name
       FROM ivr_configs ic
       LEFT JOIN leads l ON l.id = ic.lead_id
-      WHERE ic.user_id = ${viewAs}
+      WHERE ic.user_id = ${session.user.id}
       ORDER BY ic.name
     `;
   }

@@ -53,6 +53,7 @@ export default function CallLogsPage() {
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
   const load = useCallback(async (p: number, status: string) => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
