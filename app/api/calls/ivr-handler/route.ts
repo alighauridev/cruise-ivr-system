@@ -8,7 +8,7 @@ function getStreamUrl(baseUrl: string): string {
   const wsBase = baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
   return `${wsBase}/media-stream`;
 }
-
+// ds 
 export async function POST(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const callId = searchParams.get('callId');
