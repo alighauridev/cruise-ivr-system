@@ -963,7 +963,7 @@ function scheduleOpeningSpeech(state: SessionState, rtWs: WebSocket, attempt: nu
     rtWs.send(JSON.stringify({
       type: 'response.create',
       response: {
-        instructions: `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences.`,
+        instructions: `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences. IMPORTANT: Always respond in English only, never any other language.`,
       },
     }));
   } else if (attempt < 20) {
@@ -1106,13 +1106,15 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
 }
 
 function buildRtSystemPrompt(aiTask: string | null): string {
-  return `You are a polite English-speaking customer calling a cruise line. Your goal: "${aiTask ?? 'Inquire about cruise options'}".
+  return `You are a polite customer calling a cruise line. Your goal: "${aiTask ?? 'Inquire about cruise options'}".
+
+CRITICAL: You MUST always respond in English only. Never use Spanish, French, or any other language under any circumstances, regardless of what language you hear.
 
 Rules:
-- ALWAYS speak English only — never switch to any other language regardless of what you hear.
+- English only — every single response, no exceptions.
 - Keep every response to 1-2 sentences. Be natural and conversational.
 - If asked for your name, say "My name is Alex."
-- If asked for account info you don't have, say "Let me check that and get back to you."
+- If asked for account info or credentials you don't have (IATA number, booking ID, etc.), say "Let me check that with my travel agent, one moment."
 - If the agent can't help or asks to speak with a manager, say "Of course, let me transfer you now."
 - Never break character. You are the customer, the person on the other end is the cruise line agent.`;
 }
