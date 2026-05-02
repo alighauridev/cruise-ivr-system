@@ -107,13 +107,22 @@ export async function PUT(req: NextRequest) {
   const { id, name, phone_number, category, notes, ivr_config_id } = await req.json();
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-  const rows = await sql`
-    UPDATE leads
-    SET name = ${name}, phone_number = ${phone_number}, category = ${category ?? null},
-        notes = ${notes ?? null}, ivr_config_id = ${ivr_config_id ?? null}, updated_at = NOW()
-    WHERE id = ${id} AND user_id = ${session.user.id}
-    RETURNING *
-  `;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
+  const rows = isAdmin
+    ? await sql`
+        UPDATE leads
+        SET name = ${name}, phone_number = ${phone_number}, category = ${category ?? null},
+            notes = ${notes ?? null}, ivr_config_id = ${ivr_config_id ?? null}, updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `
+    : await sql`
+        UPDATE leads
+        SET name = ${name}, phone_number = ${phone_number}, category = ${category ?? null},
+            notes = ${notes ?? null}, ivr_config_id = ${ivr_config_id ?? null}, updated_at = NOW()
+        WHERE id = ${id} AND user_id = ${session.user.id}
+        RETURNING *
+      `;
 
   return NextResponse.json({ lead: rows[0] });
 }
@@ -125,7 +134,12 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-  await sql`DELETE FROM leads WHERE id = ${id} AND user_id = ${session.user.id}`;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
+  if (isAdmin) {
+    await sql`DELETE FROM leads WHERE id = ${id}`;
+  } else {
+    await sql`DELETE FROM leads WHERE id = ${id} AND user_id = ${session.user.id}`;
+  }
 
   return NextResponse.json({ ok: true });
 }

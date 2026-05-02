@@ -13,7 +13,16 @@ export async function GET(req: NextRequest) {
   const isAdmin = session.user.email === ADMIN_EMAIL;
 
   let rows;
-  if (isAdmin) {
+  if (isAdmin && leadId) {
+    rows = await sql`
+      SELECT ic.*, l.name as lead_name, u.name as owner_name, u.id as owner_user_id
+      FROM ivr_configs ic
+      LEFT JOIN leads l ON l.id = ic.lead_id
+      JOIN users u ON u.id = ic.user_id
+      WHERE ic.lead_id = ${leadId}
+      ORDER BY ic.name
+    `;
+  } else if (isAdmin) {
     rows = await sql`
       SELECT ic.*, l.name as lead_name, u.name as owner_name, u.id as owner_user_id
       FROM ivr_configs ic

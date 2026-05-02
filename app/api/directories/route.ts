@@ -54,11 +54,18 @@ export async function PUT(req: NextRequest) {
   const { id, name, description } = await req.json();
   if (!id || !name) return NextResponse.json({ error: 'id and name required' }, { status: 400 });
 
-  const rows = await sql`
-    UPDATE directories SET name = ${name}, description = ${description ?? null}, updated_at = NOW()
-    WHERE id = ${id} AND user_id = ${session.user.id}
-    RETURNING *
-  `;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
+  const rows = isAdmin
+    ? await sql`
+        UPDATE directories SET name = ${name}, description = ${description ?? null}, updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `
+    : await sql`
+        UPDATE directories SET name = ${name}, description = ${description ?? null}, updated_at = NOW()
+        WHERE id = ${id} AND user_id = ${session.user.id}
+        RETURNING *
+      `;
 
   return NextResponse.json({ directory: rows[0] });
 }
@@ -70,7 +77,12 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-  await sql`DELETE FROM directories WHERE id = ${id} AND user_id = ${session.user.id}`;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
+  if (isAdmin) {
+    await sql`DELETE FROM directories WHERE id = ${id}`;
+  } else {
+    await sql`DELETE FROM directories WHERE id = ${id} AND user_id = ${session.user.id}`;
+  }
 
   return NextResponse.json({ ok: true });
 }
