@@ -3,6 +3,8 @@ import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
 import { twilioClient, twilioPhone } from '@/lib/twilio';
 
+const ADMIN_EMAIL = 'alighauridev@gmail.com';
+
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -14,13 +16,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
   }
 
-  const leads = await sql`
-    SELECT l.*, ic.steps, ic.id as ivr_config_id
-    FROM leads l
-    LEFT JOIN ivr_configs ic ON ic.id = l.ivr_config_id
-    WHERE l.id = ${leadId} AND l.user_id = ${session.user.id}
-    LIMIT 1
-  `;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
+
+  const leads = isAdmin
+    ? await sql`
+        SELECT l.*, ic.steps, ic.id as ivr_config_id
+        FROM leads l
+        LEFT JOIN ivr_configs ic ON ic.id = l.ivr_config_id
+        WHERE l.id = ${leadId}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT l.*, ic.steps, ic.id as ivr_config_id
+        FROM leads l
+        LEFT JOIN ivr_configs ic ON ic.id = l.ivr_config_id
+        WHERE l.id = ${leadId} AND l.user_id = ${session.user.id}
+        LIMIT 1
+      `;
 
   if (leads.length === 0) {
     return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
@@ -32,7 +44,9 @@ export async function POST(req: NextRequest) {
   let ivrSteps = lead.steps;
   let resolvedIvrConfigId = lead.ivr_config_id as string | null;
   if (ivrConfigId && ivrConfigId !== lead.ivr_config_id) {
-    const cfgRows = await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} AND user_id = ${session.user.id} LIMIT 1`;
+    const cfgRows = isAdmin
+      ? await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} LIMIT 1`
+      : await sql`SELECT id, steps FROM ivr_configs WHERE id = ${ivrConfigId} AND user_id = ${session.user.id} LIMIT 1`;
     if (cfgRows.length > 0) {
       ivrSteps = cfgRows[0].steps;
       resolvedIvrConfigId = cfgRows[0].id as string;

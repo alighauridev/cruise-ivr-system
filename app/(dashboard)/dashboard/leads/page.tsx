@@ -7,6 +7,8 @@ interface Directory {
   name: string;
   description: string;
   lead_count: number;
+  owner_email?: string;
+  owner_name?: string;
 }
 
 interface Lead {
@@ -37,12 +39,14 @@ export default function LeadsPage() {
   const [dirForm, setDirForm] = useState({ name: '', description: '' });
   const [leadForm, setLeadForm] = useState({ name: '', phone_number: '', category: '', notes: '', ivr_config_id: '' });
   const [loading, setLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadDirectories = async () => {
     const r = await fetch('/api/directories');
     const d = await r.json();
     setDirectories(d.directories ?? []);
+    setIsAdmin(d.isAdmin ?? false);
     if (d.directories?.length > 0 && !selectedDir) {
       setSelectedDir(d.directories[0].id);
     }
@@ -148,8 +152,15 @@ export default function LeadsPage() {
     <div className="h-full flex flex-col">
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Leads</h1>
-          <p className="text-gray-400 text-sm mt-1">Manage cruise line directories and contacts</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">Leads</h1>
+            {isAdmin && (
+              <span className="text-xs px-2 py-1 rounded-full bg-red-900/40 text-red-400 border border-red-700/50 font-semibold uppercase tracking-wider">Admin View</span>
+            )}
+          </div>
+          <p className="text-gray-400 text-sm mt-1">
+            {isAdmin ? 'All users — cruise line directories and contacts' : 'Manage cruise line directories and contacts'}
+          </p>
         </div>
         <button
           onClick={() => setShowDirModal(true)}
@@ -177,6 +188,9 @@ export default function LeadsPage() {
                 >
                   <p className="text-sm font-medium truncate">{dir.name}</p>
                   <p className="text-xs opacity-70">{dir.lead_count} leads</p>
+                  {isAdmin && dir.owner_name && (
+                    <p className="text-xs mt-0.5 truncate" style={{ color: selectedDir === dir.id ? 'rgba(255,255,255,0.6)' : '#6b7280' }}>{dir.owner_name}</p>
+                  )}
                 </button>
                 <button
                   onClick={() => deleteDirectory(dir.id)}

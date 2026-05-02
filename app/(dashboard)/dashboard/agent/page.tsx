@@ -9,12 +9,16 @@ interface Lead {
   category: string;
   directory_name: string;
   ivr_config_id: string | null;
+  owner_name?: string;
+  user_id?: string;
 }
 
 interface IVRConfig {
   id: string;
   name: string;
   lead_name: string | null;
+  owner_name?: string;
+  owner_user_id?: string;
 }
 
 interface TransferNumber {
@@ -114,11 +118,13 @@ export default function AgentPage() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const convEndRef = useRef<HTMLDivElement>(null);
 
+  const [isAdmin, setIsAdmin] = useState(false);
+
   // Load leads, IVR configs, and transfer numbers
   useEffect(() => {
     fetch('/api/leads')
       .then((r) => r.json())
-      .then((d) => setLeads(d.leads ?? []));
+      .then((d) => { setLeads(d.leads ?? []); setIsAdmin(d.isAdmin ?? false); });
     fetch('/api/ivr-configs')
       .then((r) => r.json())
       .then((d) => setIvrConfigs(d.configs ?? []));
@@ -412,11 +418,18 @@ export default function AgentPage() {
                         <p className="text-sm font-medium text-white">{lead.name}</p>
                         <p className="text-xs text-gray-500 mt-0.5">{lead.phone_number}</p>
                       </div>
-                      {lead.category && (
-                        <span className="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">
-                          {lead.category}
-                        </span>
-                      )}
+                      <div className="flex flex-col items-end gap-1">
+                        {lead.category && (
+                          <span className="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">
+                            {lead.category}
+                          </span>
+                        )}
+                        {isAdmin && lead.owner_name && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/40 text-red-400 border border-red-700/50">
+                            {lead.owner_name}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <p className="text-xs text-gray-600 mt-1">{lead.directory_name}</p>
                   </button>
@@ -437,22 +450,27 @@ export default function AgentPage() {
                 )}
               </div>
 
-              {/* IVR Config selector */}
-              {ivrConfigs.length > 0 && (
-                <div>
-                  <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">IVR Script</label>
-                  <select
-                    value={selectedIvrConfigId}
-                    onChange={(e) => setSelectedIvrConfigId(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">— No IVR (hold detection only) —</option>
-                    {ivrConfigs.map((cfg) => (
-                      <option key={cfg.id} value={cfg.id}>{cfg.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {/* IVR Config selector — admin: filter to selected lead's user */}
+              {(() => {
+                const visibleConfigs = isAdmin && selectedLead?.user_id
+                  ? ivrConfigs.filter((c) => c.owner_user_id === selectedLead.user_id)
+                  : ivrConfigs;
+                return visibleConfigs.length > 0 ? (
+                  <div>
+                    <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">IVR Script</label>
+                    <select
+                      value={selectedIvrConfigId}
+                      onChange={(e) => setSelectedIvrConfigId(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">— No IVR (hold detection only) —</option>
+                      {visibleConfigs.map((cfg) => (
+                        <option key={cfg.id} value={cfg.id}>{cfg.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null;
+              })()}
 
               {/* Transfer number selector */}
               {transferNumbers.length > 1 && (

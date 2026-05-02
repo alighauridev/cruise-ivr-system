@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+
+const ADMIN_EMAIL = 'alighauridev@gmail.com';
+
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -8,41 +11,75 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const directoryId = searchParams.get('directoryId');
   const search = searchParams.get('search');
+  const isAdmin = session.user.email === ADMIN_EMAIL;
 
   let rows;
-  if (directoryId && search) {
-    rows = await sql`
-      SELECT l.*, d.name as directory_name
-      FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
-        AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
-      ORDER BY l.name
-    `;
-  } else if (directoryId) {
-    rows = await sql`
-      SELECT l.*, d.name as directory_name
-      FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
-      ORDER BY l.name
-    `;
-  } else if (search) {
-    rows = await sql`
-      SELECT l.*, d.name as directory_name
-      FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${session.user.id}
-        AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
-      ORDER BY l.name
-    `;
+  if (isAdmin) {
+    // Admin sees all users' leads
+    if (directoryId && search) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name, u.name as owner_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id JOIN users u ON u.id = l.user_id
+        WHERE l.directory_id = ${directoryId}
+          AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
+        ORDER BY l.name
+      `;
+    } else if (directoryId) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name, u.name as owner_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id JOIN users u ON u.id = l.user_id
+        WHERE l.directory_id = ${directoryId}
+        ORDER BY l.name
+      `;
+    } else if (search) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name, u.name as owner_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id JOIN users u ON u.id = l.user_id
+        WHERE l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'}
+        ORDER BY l.name
+      `;
+    } else {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name, u.name as owner_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id JOIN users u ON u.id = l.user_id
+        ORDER BY u.name, d.name, l.name
+      `;
+    }
   } else {
-    rows = await sql`
-      SELECT l.*, d.name as directory_name
-      FROM leads l JOIN directories d ON d.id = l.directory_id
-      WHERE l.user_id = ${session.user.id}
-      ORDER BY d.name, l.name
-    `;
+    if (directoryId && search) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id
+        WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
+          AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
+        ORDER BY l.name
+      `;
+    } else if (directoryId) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id
+        WHERE l.user_id = ${session.user.id} AND l.directory_id = ${directoryId}
+        ORDER BY l.name
+      `;
+    } else if (search) {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id
+        WHERE l.user_id = ${session.user.id}
+          AND (l.name ILIKE ${'%' + search + '%'} OR l.phone_number ILIKE ${'%' + search + '%'})
+        ORDER BY l.name
+      `;
+    } else {
+      rows = await sql`
+        SELECT l.*, d.name as directory_name
+        FROM leads l JOIN directories d ON d.id = l.directory_id
+        WHERE l.user_id = ${session.user.id}
+        ORDER BY d.name, l.name
+      `;
+    }
   }
 
-  return NextResponse.json({ leads: rows });
+  return NextResponse.json({ leads: rows, isAdmin });
 }
 
 export async function POST(req: NextRequest) {

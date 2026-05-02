@@ -497,7 +497,8 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
         return;
       }
 
-      if (transcript.split(' ').length >= 10) {
+      // Lowered from 10 → 4 words: short agent greetings like "Hello? Hi. Can you hear me?" (6 words) were silently skipped
+      if (!state.isVirtualAssistant && transcript.split(' ').length >= 4) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);
         if (isAgent) await handleAgentDetected(state, transcript);

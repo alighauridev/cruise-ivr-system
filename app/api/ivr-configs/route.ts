@@ -1,15 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+
+const ADMIN_EMAIL = 'alighauridev@gmail.com';
+
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const leadId = searchParams.get('leadId');
+  const isAdmin = session.user.email === ADMIN_EMAIL;
 
   let rows;
-  if (leadId) {
+  if (isAdmin) {
+    rows = await sql`
+      SELECT ic.*, l.name as lead_name, u.name as owner_name, u.id as owner_user_id
+      FROM ivr_configs ic
+      LEFT JOIN leads l ON l.id = ic.lead_id
+      JOIN users u ON u.id = ic.user_id
+      ORDER BY u.name, ic.name
+    `;
+  } else if (leadId) {
     rows = await sql`
       SELECT * FROM ivr_configs WHERE user_id = ${session.user.id} AND lead_id = ${leadId}
       ORDER BY created_at DESC

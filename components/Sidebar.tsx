@@ -105,7 +105,12 @@ export default function Sidebar({ user }: SidebarProps) {
             {user.name?.charAt(0)?.toUpperCase() ?? 'U'}
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-white truncate">{user.name}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-sm font-medium text-white truncate">{user.name}</p>
+              {user.email === 'alighauridev@gmail.com' && (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 border border-red-700/50 font-semibold flex-shrink-0">Admin</span>
+              )}
+            </div>
             <p className="text-xs text-gray-500 truncate">{user.email}</p>
           </div>
         </div>

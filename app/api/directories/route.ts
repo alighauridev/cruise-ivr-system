@@ -1,20 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+
+const ADMIN_EMAIL = 'alighauridev@gmail.com';
+
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const rows = await sql`
-    SELECT d.*, COUNT(l.id)::INTEGER as lead_count
-    FROM directories d
-    LEFT JOIN leads l ON l.directory_id = d.id
-    WHERE d.user_id = ${session.user.id}
-    GROUP BY d.id
-    ORDER BY d.name
-  `;
+  const isAdmin = session.user.email === ADMIN_EMAIL;
 
-  return NextResponse.json({ directories: rows });
+  const rows = isAdmin
+    ? await sql`
+        SELECT d.*, COUNT(l.id)::INTEGER as lead_count, u.email as owner_email, u.name as owner_name
+        FROM directories d
+        LEFT JOIN leads l ON l.directory_id = d.id
+        JOIN users u ON u.id = d.user_id
+        GROUP BY d.id, u.email, u.name
+        ORDER BY u.name, d.name
+      `
+    : await sql`
+        SELECT d.*, COUNT(l.id)::INTEGER as lead_count
+        FROM directories d
+        LEFT JOIN leads l ON l.directory_id = d.id
+        WHERE d.user_id = ${session.user.id}
+        GROUP BY d.id
+        ORDER BY d.name
+      `;
+
+  return NextResponse.json({ directories: rows, isAdmin });
 }
 
 export async function POST(req: NextRequest) {
