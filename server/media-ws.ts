@@ -483,10 +483,6 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.ivrExecutor.onTranscript(transcript);
 
     if (state.ivrExecutor.isInHoldMode()) {
-      // Once in hold mode the VA phase is over — a real human agent may pick up next.
-      // Clear the flag so VA detection from IVR navigation doesn't block agent detection.
-      state.isVirtualAssistant = false;
-
       await checkHoldStatus(state);
 
       // Auto-press to stay on hold when prompted (e.g. "press 1 to continue holding")
@@ -501,8 +497,10 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
         return;
       }
 
-      // Lowered from 10 → 4 words: short agent greetings like "Hello? Hi. Can you hear me?" (6 words) were silently skipped
-      if (!state.isVirtualAssistant && transcript.split(' ').length >= 4) {
+      // Per-transcript VA check: the persistent isVirtualAssistant flag may have been set during IVR
+      // but a real human can still pick up after hold. Check each transcript fresh instead.
+      // Still skip if THIS transcript itself contains VA phrases (e.g. VA talks after entering hold).
+      if (!detectVirtualAssistant(transcript) && transcript.split(' ').length >= 4) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);
         if (isAgent) await handleAgentDetected(state, transcript);

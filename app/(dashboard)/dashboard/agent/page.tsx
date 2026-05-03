@@ -533,7 +533,7 @@ export default function AgentPage() {
         <div className="flex-1 flex gap-4 min-w-0">
           {activeCall ? (
             <div
-              className={`rounded-2xl border p-8 h-full flex flex-col ${STATUS_BG[activeCall.status] ?? 'bg-gray-900 border-gray-800'}`}
+              className={`rounded-2xl border p-6 flex flex-col overflow-hidden ${STATUS_BG[activeCall.status] ?? 'bg-gray-900 border-gray-800'}`}
             >
               {/* Status indicator */}
               <div className="flex items-start justify-between mb-8">
@@ -559,9 +559,12 @@ export default function AgentPage() {
                 </div>
               </div>
 
+              {/* Scrollable middle content */}
+              <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
+
               {/* IVR Progress */}
-              <div className="mb-8">
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-4">Call Progress</p>
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Call Progress</p>
                 <div className="space-y-2">
                   {[
                     { key: 'initiating', label: 'Call Initiated' },
@@ -607,7 +610,7 @@ export default function AgentPage() {
 
               {/* Hold timer */}
               {['on_hold', 'agent_detected'].includes(activeCall.status) && (
-                <div className="bg-black/20 rounded-xl p-4 mb-6">
+                <div className="bg-black/20 rounded-xl p-4">
                   <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Hold Duration</p>
                   <p className="text-2xl font-mono font-bold text-orange-400">{formatDuration(elapsed)}</p>
                 </div>
@@ -615,7 +618,7 @@ export default function AgentPage() {
 
               {/* Agent detected alert */}
               {activeCall.status === 'agent_detected' && (
-                <div className="bg-green-900/50 border border-green-700 rounded-xl p-4 mb-6">
+                <div className="bg-green-900/50 border border-green-700 rounded-xl p-4">
                   <p className="text-green-300 font-semibold">A live agent has answered!</p>
                   <p className="text-green-400/70 text-sm mt-1">
                     An SMS notification has been sent. Click Connect to bridge the call.
@@ -625,7 +628,7 @@ export default function AgentPage() {
 
               {/* Manual DTMF keypad — visible during IVR navigation and hold */}
               {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
-                <div className="bg-black/20 rounded-xl p-4 mb-4 space-y-3">
+                <div className="bg-black/20 rounded-xl p-4 mb-3 space-y-3">
                   <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Manual Keypad</p>
 
                   {/* Live IVR prompt */}
@@ -667,8 +670,6 @@ export default function AgentPage() {
                   <p className="text-xs text-gray-600 text-center">Digit plays on call immediately</p>
                 </div>
               )}
-
-              <div className="flex-1" />
 
               {/* AI Conversation Panel */}
               {activeCall.status === 'ai_conversation' && (
@@ -747,11 +748,12 @@ export default function AgentPage() {
                 </div>
               )}
 
-              {/* Action buttons (non-AI-conversation statuses) */}
-              {activeCall.status !== 'ai_conversation' && (
-              <div className="space-y-2">
-                {/* Transfer to Me — always visible during any live call */}
-                {isLiveStatus && !['connected', 'transferring'].includes(activeCall.status) && (
+              </div> {/* end scrollable content */}
+
+              {/* Action buttons — pinned at bottom, always visible */}
+              {activeCall.status !== 'ai_conversation' && isLiveStatus && (
+              <div className="space-y-2 mt-3 flex-shrink-0">
+                {!['connected', 'transferring'].includes(activeCall.status) && (
                   <button
                     onClick={handleTransfer}
                     className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
@@ -762,7 +764,7 @@ export default function AgentPage() {
                     Transfer to Me
                   </button>
                 )}
-                {isLiveStatus && !['connected'].includes(activeCall.status) && (
+                {!['connected'].includes(activeCall.status) && (
                   <button
                     onClick={handleEndCall}
                     className="w-full bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-3 rounded-xl transition-colors"
