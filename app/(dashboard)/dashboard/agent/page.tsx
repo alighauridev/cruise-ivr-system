@@ -749,19 +749,23 @@ export default function AgentPage() {
 
               {/* Action buttons (non-AI-conversation statuses) */}
               {activeCall.status !== 'ai_conversation' && (
-              <div className="flex gap-3">
-                {activeCall.status === 'agent_detected' && (
+              <div className="space-y-2">
+                {/* Transfer to Me — always visible during any live call */}
+                {isLiveStatus && !['connected', 'transferring'].includes(activeCall.status) && (
                   <button
                     onClick={handleTransfer}
-                    className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors"
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
                   >
-                    Connect Now
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                    Transfer to Me
                   </button>
                 )}
                 {isLiveStatus && !['connected'].includes(activeCall.status) && (
                   <button
                     onClick={handleEndCall}
-                    className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-3 rounded-xl transition-colors"
+                    className="w-full bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-3 rounded-xl transition-colors"
                   >
                     End Call
                   </button>

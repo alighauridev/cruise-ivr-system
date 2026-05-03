@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
 
   const call = rows[0];
 
-  if (!['agent_detected', 'on_hold', 'ai_conversation'].includes(call.status as string)) {
+  if (!['navigating_ivr', 'agent_detected', 'on_hold', 'ai_conversation'].includes(call.status as string)) {
     return NextResponse.json({ error: `Cannot transfer call in status: ${call.status}` }, { status: 400 });
   }
 
