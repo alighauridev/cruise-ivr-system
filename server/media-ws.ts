@@ -483,6 +483,10 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.ivrExecutor.onTranscript(transcript);
 
     if (state.ivrExecutor.isInHoldMode()) {
+      // Once in hold mode the VA phase is over — a real human agent may pick up next.
+      // Clear the flag so VA detection from IVR navigation doesn't block agent detection.
+      state.isVirtualAssistant = false;
+
       await checkHoldStatus(state);
 
       // Auto-press to stay on hold when prompted (e.g. "press 1 to continue holding")
