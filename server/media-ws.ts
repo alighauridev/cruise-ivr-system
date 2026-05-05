@@ -500,7 +500,8 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
       // Per-transcript VA check: the persistent isVirtualAssistant flag may have been set during IVR
       // but a real human can still pick up after hold. Check each transcript fresh instead.
       // Still skip if THIS transcript itself contains VA phrases (e.g. VA talks after entering hold).
-      if (!detectVirtualAssistant(transcript) && transcript.split(' ').length >= 4) {
+      // Threshold is 1 word — real agents often just say "Hello." — the AI classifier filters false positives.
+      if (!detectVirtualAssistant(transcript) && transcript.trim().split(/\s+/).length >= 1) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);
         if (isAgent) await handleAgentDetected(state, transcript);
@@ -794,7 +795,8 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
   let call: Record<string, unknown> | null = null;
   try {
     const rows = await sql`
-      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers
+      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers,
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
       FROM calls c
       JOIN users u ON u.id = c.user_id
       WHERE c.id = ${state.callId}
@@ -864,11 +866,21 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     return;
   }
 
-  // ── Branch: No task → simple flow (agent_detected status, SMS, manual transfer) ──
+  // ── Branch: No task → simple flow (agent_detected status, SMS, manual or auto transfer) ──
   console.log(`[AI] No task set — using simple connect flow callId=${state.callId}`);
 
   const connectMsg = (call?.connect_message as string | null) ||
     'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
+
+  const autoConnect = call?.auto_callback_enabled === 'true';
+  console.log(`[AI] autoConnect=${autoConnect} transferNumber=${transferNumber} callId=${state.callId}`);
+
+  // Resolve transfer number
+  const transferNums = (call?.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
+  const transferNumber = (call?.transfer_number as string | null) ??
+    transferNums.find((n) => n.isDefault)?.phone ??
+    transferNums[0]?.phone ??
+    null;
 
   // DB updates in background
   (async () => {
@@ -898,14 +910,31 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     }
   })();
 
-  // Play the connect message on the call so the agent hears something while the
-  // user decides whether to transfer. Keep the bidirectional stream alive.
-  if (state.callSid) {
-    const streamUrl = STREAM_URL();
-    state.pendingRedirects++;
+  if (autoConnect && transferNumber && state.callSid) {
+    // Auto-connect: bridge the cruise agent into a conference and call the user immediately
+    console.log(`[AI] Auto-connect enabled — bridging callId=${state.callId} to ${transferNumber}`);
+    const conferenceRoom = `CruisePro-${state.callId}`;
+    const escapedMsg = connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     twilioClient.calls(state.callSid).update({
-      twiml: `<Response><Say voice="Polly.Joanna">${connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Say><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
-    }).catch((err) => console.error(`[AI] Simple-flow Twilio update error:`, err));
+      twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
+    }).then(() =>
+      twilioClient.calls.create({
+        to: transferNumber,
+        from: twilioPhone,
+        twiml: `<Response><Say voice="alice">You are being connected to a live cruise line agent. Please hold for one moment.</Say><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
+      })
+    ).then(() =>
+      sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {})
+    ).catch((err) => console.error(`[AI] Auto-connect error callId=${state.callId}:`, err));
+  } else {
+    // Manual: play connect message and keep stream alive so user can click Transfer
+    if (state.callSid) {
+      const streamUrl = STREAM_URL();
+      state.pendingRedirects++;
+      twilioClient.calls(state.callSid).update({
+        twiml: `<Response><Say voice="Polly.Joanna">${connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</Say><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
+      }).catch((err) => console.error(`[AI] Simple-flow Twilio update error:`, err));
+    }
   }
 }
 
@@ -965,7 +994,9 @@ function scheduleOpeningSpeech(state: SessionState, rtWs: WebSocket, attempt: nu
     rtWs.send(JSON.stringify({
       type: 'response.create',
       response: {
-        instructions: `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences. IMPORTANT: Always respond in English only, never any other language.`,
+        instructions: state.aiTask
+          ? `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences. IMPORTANT: Always respond in English only, never any other language.`
+          : `You just connected to a cruise line agent. Say exactly: "Hi, thank you for answering. Please hold for just a moment while I transfer you." Speak clearly and naturally. English only.`,
       },
     }));
   } else if (attempt < 20) {
@@ -1023,7 +1054,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
     // If this is the opening (no history yet), speak the greeting once the
     // Twilio bidirectional stream is confirmed open. We poll briefly because
     // the TwiML redirect that restarts the stream may not have completed yet.
-    if (state.aiTask && state.aiConversationHistory.length === 0) {
+    if (state.aiConversationMode && state.aiConversationHistory.length === 0) {
       scheduleOpeningSpeech(state, rtWs, 0);
     } else if (state.aiConversationHistory.length > 0) {
       // Reconnected mid-conversation — replay history so OpenAI has context

@@ -15,6 +15,8 @@ interface Call {
   error_message: string | null;
   recording_url: string | null;
   transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
+  owner_name?: string;
+  owner_email?: string;
 }
 
 const PAGE_SIZE = 25;
@@ -51,6 +53,7 @@ export default function CallLogsPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -62,6 +65,7 @@ export default function CallLogsPage() {
     const d = await r.json();
     setCalls(d.calls ?? []);
     setTotal(d.total ?? 0);
+    setIsAdmin(d.isAdmin ?? false);
     setLoading(false);
   }, []);
 
@@ -102,9 +106,12 @@ export default function CallLogsPage() {
     <div className="h-full flex flex-col">
       <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Call Logs</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">Call Logs</h1>
+            {isAdmin && <span className="text-xs px-2 py-1 rounded-full bg-red-900/40 text-red-400 border border-red-700/50 font-semibold uppercase tracking-wider">Admin View</span>}
+          </div>
           <p className="text-gray-400 text-sm mt-1">
-            {total > 0 ? `${total} total call${total !== 1 ? 's' : ''}` : 'Full history of all outbound calls'}
+            {total > 0 ? `${total} total call${total !== 1 ? 's' : ''}${isAdmin ? ' — all users' : ''}` : isAdmin ? 'All users — full call history' : 'Full history of all outbound calls'}
           </p>
         </div>
         <button
@@ -152,7 +159,7 @@ export default function CallLogsPage() {
           <table className="w-full">
             <thead className="sticky top-0 bg-gray-950">
               <tr className="border-b border-gray-800">
-                {['', 'Date', 'Cruise Line', 'Phone', 'Status', 'Hold Time', 'Duration', 'Recording'].map((h) => (
+                {['', 'Date', ...(isAdmin ? ['User'] : []), 'Cruise Line', 'Phone', 'Status', 'Hold Time', 'Duration', 'Recording'].map((h) => (
                   <th key={h} className="text-left text-xs text-gray-500 uppercase tracking-wider px-4 py-3">{h}</th>
                 ))}
               </tr>
@@ -167,6 +174,11 @@ export default function CallLogsPage() {
                       </svg>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-400">{fmtDate(call.created_at)}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-4">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/40 text-red-400 border border-red-700/50">{call.owner_name ?? '—'}</span>
+                      </td>
+                    )}
                     <td className="px-4 py-4 text-sm font-medium text-white">{call.lead_name ?? '—'}</td>
                     <td className="px-4 py-4 text-sm text-gray-400 font-mono">{call.cruise_line_number ?? '—'}</td>
                     <td className="px-4 py-4">
