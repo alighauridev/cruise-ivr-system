@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { IncomingMessage } from 'http';
-import { twilioClient } from '@/lib/twilio';
+import { twilioClient, twilioPhone } from '@/lib/twilio';
 import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigator';
 import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
 import { notifyAgentDetected } from '@/lib/notifications';
@@ -873,7 +873,6 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
 
   const autoConnect = call?.auto_callback_enabled === 'true';
-  console.log(`[AI] autoConnect=${autoConnect} transferNumber=${transferNumber} callId=${state.callId}`);
 
   // Resolve transfer number
   const transferNums = (call?.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
@@ -881,6 +880,8 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     transferNums.find((n) => n.isDefault)?.phone ??
     transferNums[0]?.phone ??
     null;
+
+  console.log(`[AI] autoConnect=${autoConnect} transferNumber=${transferNumber} callId=${state.callId}`);
 
   // DB updates in background
   (async () => {
