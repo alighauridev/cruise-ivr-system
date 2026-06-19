@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 
 /**
  * Returns all transcript events for a given call.
@@ -9,16 +9,16 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const ctx = await getAuthContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const { id } = await params;
 
-  // Verify the call belongs to the user
+  // Verify the call belongs to the (effective) user
   const callRows = await sql`
-    SELECT id FROM calls WHERE id = ${id} AND user_id = ${session.user.id} LIMIT 1
+    SELECT id FROM calls WHERE id = ${id} AND user_id = ${ctx.effectiveUserId} LIMIT 1
   `;
   if (callRows.length === 0) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });

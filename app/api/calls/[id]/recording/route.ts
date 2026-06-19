@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const ctx = await getAuthContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -15,7 +15,7 @@ export async function GET(
 
   const rows = await sql`
     SELECT recording_url FROM calls
-    WHERE id = ${id} AND user_id = ${session.user.id}
+    WHERE id = ${id} AND user_id = ${ctx.effectiveUserId}
     LIMIT 1
   `;
 

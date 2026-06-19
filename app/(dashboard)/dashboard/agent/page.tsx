@@ -450,11 +450,9 @@ export default function AgentPage() {
                 )}
               </div>
 
-              {/* IVR Config selector — admin: filter to selected lead's user */}
+              {/* IVR Config selector — configs are already scoped to the current (effective) user */}
               {(() => {
-                const visibleConfigs = isAdmin && selectedLead?.user_id
-                  ? ivrConfigs.filter((c) => c.owner_user_id === selectedLead.user_id)
-                  : ivrConfigs;
+                const visibleConfigs = ivrConfigs;
                 return visibleConfigs.length > 0 ? (
                   <div>
                     <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">IVR Script</label>

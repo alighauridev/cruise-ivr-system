@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 import { twilioClient, twilioPhone } from '@/lib/twilio';
 
 const DEFAULT_CONNECT_MESSAGE = "Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.";
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  const ctx = await getAuthContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     SELECT c.*, u.connect_message, u.transfer_numbers
     FROM calls c
     JOIN users u ON u.id = c.user_id
-    WHERE c.id = ${callId} AND c.user_id = ${session.user.id}
+    WHERE c.id = ${callId} AND c.user_id = ${ctx.effectiveUserId}
     LIMIT 1
   `;
 

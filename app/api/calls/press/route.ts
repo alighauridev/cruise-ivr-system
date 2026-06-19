@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 import { pressDigitOnCall } from '@/server/media-ws';
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const ctx = await getAuthContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { callId, digit } = await req.json();
   if (!callId || !digit) return NextResponse.json({ error: 'callId and digit required' }, { status: 400 });
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   const rows = await sql`
     SELECT id, status FROM calls
-    WHERE id = ${callId} AND user_id = ${session.user.id}
+    WHERE id = ${callId} AND user_id = ${ctx.effectiveUserId}
     LIMIT 1
   `;
   if (rows.length === 0) return NextResponse.json({ error: 'Call not found' }, { status: 404 });

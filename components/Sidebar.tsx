@@ -3,9 +3,13 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { signOut } from 'next-auth/react';
+import UserSwitcher from './UserSwitcher';
 
 interface SidebarProps {
   user: { name?: string | null; email?: string | null };
+  isAdmin?: boolean;
+  realUserId?: string;
+  actingAsId?: string | null;
 }
 
 const navItems = [
@@ -57,7 +61,7 @@ const navItems = [
   },
 ];
 
-export default function Sidebar({ user }: SidebarProps) {
+export default function Sidebar({ user, isAdmin, realUserId, actingAsId }: SidebarProps) {
   const pathname = usePathname();
 
   return (
@@ -100,6 +104,9 @@ export default function Sidebar({ user }: SidebarProps) {
 
       {/* User footer */}
       <div className="px-4 py-4 border-t border-gray-800">
+        {isAdmin && realUserId && (
+          <UserSwitcher realUserId={realUserId} actingAsId={actingAsId ?? null} />
+        )}
         <div className="flex items-center gap-3 mb-3">
           <div className="w-8 h-8 rounded-full bg-blue-700 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
             {user.name?.charAt(0)?.toUpperCase() ?? 'U'}
@@ -107,7 +114,7 @@ export default function Sidebar({ user }: SidebarProps) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-medium text-white truncate">{user.name}</p>
-              {user.email === 'alighauridev@gmail.com' && (
+              {isAdmin && (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 border border-red-700/50 font-semibold flex-shrink-0">Admin</span>
               )}
             </div>

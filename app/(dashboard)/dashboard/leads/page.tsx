@@ -40,6 +40,7 @@ export default function LeadsPage() {
   const [leadForm, setLeadForm] = useState({ name: '', phone_number: '', category: '', notes: '', ivr_config_id: '' });
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [impersonating, setImpersonating] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadDirectories = async () => {
@@ -47,6 +48,7 @@ export default function LeadsPage() {
     const d = await r.json();
     setDirectories(d.directories ?? []);
     setIsAdmin(d.isAdmin ?? false);
+    setImpersonating(d.impersonating ?? false);
     if (d.directories?.length > 0 && !selectedDir) {
       setSelectedDir(d.directories[0].id);
     }
@@ -154,13 +156,11 @@ export default function LeadsPage() {
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-white">Leads</h1>
-            {isAdmin && (
-              <span className="text-xs px-2 py-1 rounded-full bg-red-900/40 text-red-400 border border-red-700/50 font-semibold uppercase tracking-wider">Admin View</span>
+            {isAdmin && !impersonating && (
+              <span className="text-xs px-2 py-1 rounded-full bg-red-900/40 text-red-400 border border-red-700/50 font-semibold uppercase tracking-wider">Admin</span>
             )}
           </div>
-          <p className="text-gray-400 text-sm mt-1">
-            {isAdmin ? 'All users — cruise line directories and contacts' : 'Manage cruise line directories and contacts'}
-          </p>
+          <p className="text-gray-400 text-sm mt-1">Manage cruise line directories and contacts</p>
         </div>
         <button
           onClick={() => setShowDirModal(true)}

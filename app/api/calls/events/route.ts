@@ -1,14 +1,15 @@
 import { NextRequest } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 
 export const dynamic = 'force-dynamic';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) return new Response('Unauthorized', { status: 401 });
+  const ctx = await getAuthContext();
+  if (!ctx) return new Response('Unauthorized', { status: 401 });
+  const userId = ctx.effectiveUserId;
 
   const callId = req.nextUrl.searchParams.get('callId');
   if (!callId) return new Response('callId required', { status: 400 });
@@ -35,12 +36,12 @@ export async function GET(req: NextRequest) {
           SELECT ce.*
           FROM call_events ce
           JOIN calls c ON c.id = ce.call_id
-          WHERE ce.call_id = ${callId} AND c.user_id = ${session!.user!.id}
+          WHERE ce.call_id = ${callId} AND c.user_id = ${userId}
           ORDER BY ce.created_at ASC
         `,
         sql`
           SELECT status, hold_duration_seconds, twilio_call_sid
-          FROM calls WHERE id = ${callId} AND user_id = ${session!.user!.id}
+          FROM calls WHERE id = ${callId} AND user_id = ${userId}
           LIMIT 1
         `,
       ]);
@@ -74,7 +75,7 @@ export async function GET(req: NextRequest) {
                 FROM call_events ce
                 JOIN calls c ON c.id = ce.call_id
                 WHERE ce.call_id = ${callId}
-                  AND c.user_id = ${session!.user!.id}
+                  AND c.user_id = ${userId}
                   AND ce.created_at > ${lastEventTime}::timestamptz
                 ORDER BY ce.created_at ASC
               `
@@ -82,7 +83,7 @@ export async function GET(req: NextRequest) {
 
           const updatedCallRows = await sql`
             SELECT status, hold_duration_seconds, twilio_call_sid
-            FROM calls WHERE id = ${callId} AND user_id = ${session!.user!.id}
+            FROM calls WHERE id = ${callId} AND user_id = ${userId}
             LIMIT 1
           `;
           const updatedCall = updatedCallRows[0] ?? null;

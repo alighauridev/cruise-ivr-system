@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
 import sql from '@/lib/db';
+import { getAuthContext } from '@/lib/admin';
 import type { IVRStep } from '@/lib/ivr-engine';
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const ctx = await getAuthContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const ownerId = ctx.effectiveUserId;
 
   const formData = await req.formData();
   const file = formData.get('file') as File;
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
         // Create IVR config
         const configRows = await sql`
           INSERT INTO ivr_configs (user_id, name, steps)
-          VALUES (${session.user.id}, ${`${name} IVR`}, ${JSON.stringify(steps)})
+          VALUES (${ownerId}, ${`${name} IVR`}, ${JSON.stringify(steps)})
           RETURNING id
         `;
         ivrConfigId = configRows[0].id as string;
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
     // Create lead
     const leadRows = await sql`
       INSERT INTO leads (user_id, directory_id, name, phone_number, category, notes, ivr_config_id)
-      VALUES (${session.user.id}, ${directoryId}, ${name}, ${phone}, ${category}, ${notes}, ${ivrConfigId})
+      VALUES (${ownerId}, ${directoryId}, ${name}, ${phone}, ${category}, ${notes}, ${ivrConfigId})
       RETURNING id
     `;
 
