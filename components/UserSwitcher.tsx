@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 interface AdminUser {
   id: string;
@@ -20,7 +19,6 @@ interface Props {
 }
 
 export default function UserSwitcher({ realUserId, actingAsId }: Props) {
-  const router = useRouter();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -39,8 +37,10 @@ export default function UserSwitcher({ realUserId, actingAsId }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
       });
-      router.refresh();
-    } finally {
+      // Full reload so every client component refetches under the new effective user
+      // (router.refresh() wouldn't re-run client-side fetches like the agent page's leads).
+      window.location.reload();
+    } catch {
       setBusy(false);
     }
   };

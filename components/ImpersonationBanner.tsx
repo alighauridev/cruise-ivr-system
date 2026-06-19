@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 interface Props {
   name: string;
@@ -9,15 +8,15 @@ interface Props {
 }
 
 export default function ImpersonationBanner({ name, email }: Props) {
-  const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   const exit = async () => {
     setBusy(true);
     try {
       await fetch('/api/admin/impersonate', { method: 'DELETE' });
-      router.refresh();
-    } finally {
+      // Full reload so every client component refetches as the admin's own account.
+      window.location.reload();
+    } catch {
       setBusy(false);
     }
   };
