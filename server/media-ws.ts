@@ -912,21 +912,40 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
   })();
 
   if (autoConnect && transferNumber && state.callSid) {
-    // Auto-connect: bridge the cruise agent into a conference and call the user immediately
+    // Auto-connect: the instant the agent is detected, keep THEM on the line with a
+    // "please hold" message + conference hold music (so they never hear silence and
+    // hang up), and dial the customer IN PARALLEL so their phone rings immediately.
+    // Both legs join the same conference and bridge the moment the customer answers.
     console.log(`[AI] Auto-connect enabled — bridging callId=${state.callId} to ${transferNumber}`);
     const conferenceRoom = `CruisePro-${state.callId}`;
     const escapedMsg = connectMsg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    twilioClient.calls(state.callSid).update({
-      twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
-    }).then(() =>
-      twilioClient.calls.create({
-        to: transferNumber,
-        from: twilioPhone,
-        twiml: `<Response><Say voice="alice">You are being connected to a live cruise line agent. Please hold for one moment.</Say><Dial><Conference>${conferenceRoom}</Conference></Dial></Response>`,
-      })
-    ).then(() =>
-      sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {})
-    ).catch((err) => console.error(`[AI] Auto-connect error callId=${state.callId}:`, err));
+    // A conference with no waitUrl plays Twilio's default hold music to whoever is
+    // waiting alone — that's what keeps the agent engaged until the customer joins.
+    const conf = (extra = '') =>
+      `<Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false"${extra}>${conferenceRoom}</Conference></Dial>`;
+
+    // Reflect the bridge in the dashboard right away.
+    sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
+    sql`INSERT INTO call_events (call_id, event_type, details) VALUES (${state.callId}, 'auto_connect_initiated', ${JSON.stringify({ transferNumber })})`.catch(() => {});
+
+    // Agent leg: hear the hold message, then wait in the conference (with hold music).
+    const agentLeg = twilioClient.calls(state.callSid!).update({
+      twiml: `<Response><Say voice="Polly.Joanna">${escapedMsg}</Say>${conf()}</Response>`,
+    });
+    // Customer leg: dialed in parallel so the phone starts ringing instantly.
+    const customerLeg = twilioClient.calls.create({
+      to: transferNumber,
+      from: twilioPhone,
+      twiml: `<Response><Say voice="alice">Please hold, connecting you to a live cruise line agent now.</Say>${conf()}</Response>`,
+    });
+
+    Promise.all([agentLeg, customerLeg]).catch(async (err) => {
+      const m = err instanceof Error ? err.message : String(err);
+      console.error(`[AI] Auto-connect error callId=${state.callId}:`, m);
+      // Persist the failure so it's diagnosable instead of vanishing into the server log.
+      await sql`UPDATE calls SET error_message = ${`Auto-connect failed: ${m}`}, updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
+      await sql`INSERT INTO call_events (call_id, event_type, details) VALUES (${state.callId}, 'auto_connect_failed', ${JSON.stringify({ error: m })})`.catch(() => {});
+    });
   } else {
     // Manual: play connect message and keep stream alive so user can click Transfer
     if (state.callSid) {
