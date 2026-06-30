@@ -870,7 +870,8 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
   console.log(`[AI] No task set — using simple connect flow callId=${state.callId}`);
 
   const connectMsg = (call?.connect_message as string | null) ||
-    'Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.';
+    'Hello, thank you for taking the call. A live agent will be on the line with you in just one moment. ' +
+    'Please hold during the transfer and stay on the line — do not hang up. Connecting you now.';
 
   const autoConnect = call?.auto_callback_enabled === 'true';
 

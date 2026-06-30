@@ -3,7 +3,7 @@ import sql from '@/lib/db';
 import { getAuthContext } from '@/lib/admin';
 import { twilioClient, twilioPhone } from '@/lib/twilio';
 
-const DEFAULT_CONNECT_MESSAGE = "Thank you for your patience. We are connecting you to our customer now. Please hold for just a moment.";
+const DEFAULT_CONNECT_MESSAGE = "Hello, thank you for taking the call. A live agent will be on the line with you in just one moment. Please hold during the transfer and stay on the line — do not hang up. Connecting you now.";
 
 export async function POST(req: NextRequest) {
   const ctx = await getAuthContext();
