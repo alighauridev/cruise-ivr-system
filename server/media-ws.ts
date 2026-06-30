@@ -55,6 +55,12 @@ interface SessionState {
   pendingCloses: number;
   dgSocket: WebSocket | null;
   ivrSteps: IVRStep[] | null;
+  /**
+   * Call + user config (transfer numbers, connect_message, ai_task, auto_callback,
+   * notification_phone), pre-loaded at call start so handleAgentDetected never has
+   * to block on a DB query at the critical moment the agent picks up.
+   */
+  callConfig: Record<string, unknown> | null;
   ivrExecutor: IVRExecutor | null;
   maxDurationTimer: ReturnType<typeof setTimeout> | null;
   /** Fires after the last WS closes to clean up if no new WS reconnects. */
@@ -186,6 +192,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             pendingCloses: 0,
             dgSocket: null,
             ivrSteps: null,
+            callConfig: null,
             ivrExecutor: null,
             maxDurationTimer: null,
             reconnectTimer: null,
@@ -302,23 +309,34 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
 }
 
 async function setupSession(state: SessionState, _ws: WebSocket): Promise<void> {
-  // Load IVR config from DB
+  // Load IVR config + connect config from DB in ONE query at call start.
+  // Caching the connect config (transfer numbers, message, ai_task, auto_callback)
+  // means handleAgentDetected never blocks on a DB query when the agent picks up —
+  // the "please hold" message + bridge fire instantly instead of waiting on a slow
+  // (sometimes 10s+ on a Neon cold connection) query at the worst possible moment.
   try {
     const rows = await sql`
-      SELECT ic.steps
+      SELECT c.*, ic.steps,
+             u.notification_phone, u.connect_message, u.transfer_numbers,
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
       FROM calls c
+      JOIN users u ON u.id = c.user_id
       LEFT JOIN ivr_configs ic ON ic.id = c.ivr_config_id
       WHERE c.id = ${state.callId}
       LIMIT 1
     `;
-    if (rows[0]?.steps && Array.isArray(rows[0].steps) && rows[0].steps.length > 0) {
-      state.ivrSteps = rows[0].steps as IVRStep[];
-      console.log(`[MediaWS] Loaded ${state.ivrSteps.length} IVR steps for callId=${state.callId}`);
-    } else {
-      console.log(`[MediaWS] No IVR config for callId=${state.callId} — AI fallback mode`);
+    if (rows[0]) {
+      state.callConfig = rows[0] as Record<string, unknown>;
+      const steps = rows[0].steps;
+      if (steps && Array.isArray(steps) && steps.length > 0) {
+        state.ivrSteps = steps as IVRStep[];
+        console.log(`[MediaWS] Loaded ${state.ivrSteps.length} IVR steps for callId=${state.callId}`);
+      } else {
+        console.log(`[MediaWS] No IVR config for callId=${state.callId} — AI fallback mode`);
+      }
     }
   } catch (err) {
-    console.error(`[MediaWS] Failed to load IVR config:`, err);
+    console.error(`[MediaWS] Failed to load call config:`, err);
   }
 
   // Start IVR executor IMMEDIATELY — DTMF/wait steps don't need Deepgram.
@@ -790,23 +808,25 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
 
   console.log(`[AI] AGENT DETECTED callId=${state.callId}`);
 
-  // Fetch user/call data — needed to branch on ai_task and get notification_phone.
-  // This is a single fast query; done before anything else so the branch is correct.
-  let call: Record<string, unknown> | null = null;
-  try {
-    const rows = await sql`
-      SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers,
-             (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
-      FROM calls c
-      JOIN users u ON u.id = c.user_id
-      WHERE c.id = ${state.callId}
-      LIMIT 1
-    `;
-    if (rows.length === 0) return;
-    call = rows[0] as Record<string, unknown>;
-  } catch (err) {
-    console.error(`[AI] handleAgentDetected DB fetch error callId=${state.callId}:`, err);
-    // Can't determine ai_task — fall through to simple flow to be safe
+  // Use the config pre-loaded at call start — NO DB query in this hot path, so the
+  // "please hold" message fires within ~1s of detection instead of blocking 10-20s
+  // on a slow Neon connection. Only fall back to a query if the cache is missing.
+  let call: Record<string, unknown> | null = state.callConfig;
+  if (!call) {
+    try {
+      const rows = await sql`
+        SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers,
+               (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
+        FROM calls c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.id = ${state.callId}
+        LIMIT 1
+      `;
+      call = rows[0] as Record<string, unknown> ?? null;
+    } catch (err) {
+      console.error(`[AI] handleAgentDetected DB fetch error callId=${state.callId}:`, err);
+      // Can't determine ai_task — fall through to simple flow to be safe
+    }
   }
 
   const aiTask = (call?.ai_task as string | null) || null;
