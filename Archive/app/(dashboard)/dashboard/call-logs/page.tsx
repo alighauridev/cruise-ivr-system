@@ -1,0 +1,318 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+
+interface Call {
+  id: string;
+  lead_name: string;
+  lead_phone: string;
+  cruise_line_number: string;
+  status: string;
+  hold_duration_seconds: number | null;
+  total_duration_seconds: number | null;
+  created_at: string;
+  agent_detected_time: string | null;
+  error_message: string | null;
+  recording_url: string | null;
+  transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
+  owner_name?: string;
+  owner_email?: string;
+}
+
+const PAGE_SIZE = 25;
+
+const STATUS_BADGE: Record<string, string> = {
+  completed: 'bg-green-900/50 text-green-400 border-green-700/50',
+  connected: 'bg-blue-900/50 text-blue-400 border-blue-700/50',
+  agent_detected: 'bg-purple-900/50 text-purple-400 border-purple-700/50',
+  ai_conversation: 'bg-purple-900/50 text-purple-400 border-purple-700/50',
+  on_hold: 'bg-orange-900/50 text-orange-400 border-orange-700/50',
+  navigating_ivr: 'bg-yellow-900/50 text-yellow-400 border-yellow-700/50',
+  failed: 'bg-red-900/50 text-red-400 border-red-700/50',
+  cancelled: 'bg-gray-800 text-gray-500 border-gray-700',
+  initiating: 'bg-gray-800 text-gray-400 border-gray-700',
+};
+
+function fmt(seconds: number | null) {
+  if (!seconds) return '—';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+export default function CallLogsPage() {
+  const [calls, setCalls] = useState<Call[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [impersonating, setImpersonating] = useState(false);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const load = useCallback(async (p: number, status: string) => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
+    if (status) params.set('status', status);
+    const r = await fetch(`/api/calls?${params}`);
+    const d = await r.json();
+    setCalls(d.calls ?? []);
+    setTotal(d.total ?? 0);
+    setIsAdmin(d.isAdmin ?? false);
+    setImpersonating(d.impersonating ?? false);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    setPage(0);
+    load(0, statusFilter);
+  }, [statusFilter, load]);
+
+  useEffect(() => {
+    load(page, statusFilter);
+  }, [page, load, statusFilter]);
+
+  const toggleTranscript = (callId: string) => {
+    setExpandedCallId(expandedCallId === callId ? null : callId);
+  };
+
+  function exportCSV() {
+    const rows = [
+      ['Date', 'Lead', 'Phone', 'Status', 'Hold Time', 'Total Duration'].join(','),
+      ...calls.map((c) =>
+        [fmtDate(c.created_at), c.lead_name ?? '', c.cruise_line_number ?? '', c.status, fmt(c.hold_duration_seconds), fmt(c.total_duration_seconds)].join(',')
+      ),
+    ];
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `call-logs-${Date.now()}.csv`;
+    a.click();
+  }
+
+  const goTo = (p: number) => {
+    if (p < 0 || p >= totalPages) return;
+    setPage(p);
+    setExpandedCallId(null);
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">Call Logs</h1>
+            {isAdmin && !impersonating && <span className="text-xs px-2 py-1 rounded-full bg-red-900/40 text-red-400 border border-red-700/50 font-semibold uppercase tracking-wider">Admin</span>}
+          </div>
+          <p className="text-gray-400 text-sm mt-1">
+            {total > 0 ? `${total} total call${total !== 1 ? 's' : ''}` : 'Full history of all outbound calls'}
+          </p>
+        </div>
+        <button
+          onClick={exportCSV}
+          className="flex items-center gap-2 border border-gray-700 text-gray-400 hover:text-white text-sm px-4 py-2.5 rounded-xl transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          Export CSV
+        </button>
+      </div>
+
+      {/* Filter */}
+      <div className="px-8 py-4 flex gap-2 border-b border-gray-800 flex-wrap">
+        {['', 'completed', 'connected', 'ai_conversation', 'on_hold', 'failed', 'cancelled'].map((s) => (
+          <button
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+              statusFilter === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-700 text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            {s === '' ? 'All' : s.replace(/_/g, ' ')}
+          </button>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div className="flex-1 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center h-40">
+            <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : calls.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <div className="w-16 h-16 rounded-full bg-gray-900 border border-gray-800 flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+            </div>
+            <p className="text-gray-500">No calls found</p>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead className="sticky top-0 bg-gray-950">
+              <tr className="border-b border-gray-800">
+                {['', 'Date', 'Cruise Line', 'Phone', 'Status', 'Hold Time', 'Duration', 'Recording'].map((h) => (
+                  <th key={h} className="text-left text-xs text-gray-500 uppercase tracking-wider px-4 py-3">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {calls.map((call) => (
+                <React.Fragment key={call.id}>
+                  <tr className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors cursor-pointer" onClick={() => toggleTranscript(call.id)}>
+                    <td className="px-4 py-4 text-gray-500">
+                      <svg className={`w-4 h-4 transition-transform ${expandedCallId === call.id ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmtDate(call.created_at)}</td>
+                    <td className="px-4 py-4 text-sm font-medium text-white">{call.lead_name ?? '—'}</td>
+                    <td className="px-4 py-4 text-sm text-gray-400 font-mono">{call.cruise_line_number ?? '—'}</td>
+                    <td className="px-4 py-4">
+                      <span className={`text-xs px-2.5 py-1 rounded-full border ${STATUS_BADGE[call.status] ?? 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+                        {call.status.replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmt(call.hold_duration_seconds)}</td>
+                    <td className="px-4 py-4 text-sm text-gray-400">{fmt(call.total_duration_seconds)}</td>
+                    <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
+                      {call.recording_url ? (
+                        <div className="flex items-center gap-2">
+                          <audio controls src={`/api/calls/${call.id}/recording`} className="h-8 w-44" style={{ accentColor: '#3b82f6' }} preload="none" />
+                          <a href={`/api/calls/${call.id}/recording`} download target="_blank" rel="noreferrer" className="text-gray-500 hover:text-white transition-colors" title="Download">
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          </a>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {expandedCallId === call.id && (
+                    <tr key={`${call.id}-transcript`} className="border-b border-gray-800/50">
+                      <td colSpan={8} className="px-4 py-0">
+                        <div className="bg-gray-900/80 rounded-xl border border-gray-800 my-2 p-4 max-h-96 overflow-y-auto">
+                          <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-3 font-semibold">Call Transcript</h4>
+                          {call.transcript?.utterances && call.transcript.utterances.length > 0 ? (
+                            <div className="space-y-2">
+                              {call.transcript.utterances.map((u, i) => (
+                                <div key={i} className="flex gap-3 text-sm">
+                                  <span className="text-gray-600 text-xs font-mono shrink-0 mt-1 w-14 text-right">
+                                    {Math.floor(u.start / 60)}:{String(Math.floor(u.start % 60)).padStart(2, '0')}
+                                  </span>
+                                  <div className={`rounded-lg px-3 py-2 max-w-[80%] ${
+                                    u.speaker === 0
+                                      ? 'bg-blue-900/30 border border-blue-800/50 text-blue-200'
+                                      : 'bg-gray-800/50 border border-gray-700/50 text-gray-200'
+                                  }`}>
+                                    <span className="text-xs font-semibold block mb-0.5 opacity-60">
+                                      {u.speaker === 0 ? 'IVR / Agent' : 'Our System'}
+                                    </span>
+                                    {u.text}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : call.transcript?.text ? (
+                            <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{call.transcript.text}</p>
+                          ) : call.transcript ? (
+                            <p className="text-gray-600 text-sm">Recording too short — no speech detected.</p>
+                          ) : (
+                            <p className="text-gray-600 text-sm">
+                              {call.recording_url ? 'Transcript processing...' : 'No recording available for this call.'}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="px-8 py-4 border-t border-gray-800 flex items-center justify-between">
+          <p className="text-xs text-gray-500">
+            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => goTo(0)}
+              disabled={page === 0}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="First page"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(page - 1)}
+              disabled={page === 0}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Previous"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+
+            {/* Page number buttons — show at most 5 around current */}
+            {Array.from({ length: totalPages }, (_, i) => i)
+              .filter((i) => Math.abs(i - page) <= 2)
+              .map((i) => (
+                <button
+                  key={i}
+                  onClick={() => goTo(i)}
+                  className={`w-8 h-8 rounded-lg text-xs font-medium border transition-colors ${
+                    i === page
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'border-gray-700 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+
+            <button
+              onClick={() => goTo(page + 1)}
+              disabled={page >= totalPages - 1}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Next"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            <button
+              onClick={() => goTo(totalPages - 1)}
+              disabled={page >= totalPages - 1}
+              className="p-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Last page"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

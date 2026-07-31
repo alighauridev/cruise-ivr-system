@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "noEmit": false,
+    "outDir": ".server-dist",
+    "rootDir": ".",
+    "incremental": false,
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["server.ts", "_path-register.ts", "server/**/*.ts", "lib/**/*.ts"]
+}
