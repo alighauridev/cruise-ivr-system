@@ -343,7 +343,7 @@ export default function AgentPage() {
     setCallLoading(false);
 
     if (!res.ok) {
-      setError(data.error ?? `Server error (${res.status}) — check your internet connection`);
+      setError(data.error ?? `Server error (${res.status}) — please try again`);
       return;
     }
 

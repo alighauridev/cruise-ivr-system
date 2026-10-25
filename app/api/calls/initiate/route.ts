@@ -5,6 +5,17 @@ import { twilioClient, twilioPhone } from '@/lib/twilio';
 import { AiTaskDetails, REQUEST_TYPES, taskToText } from '@/server/ai-call-agent';
 
 export async function POST(req: NextRequest) {
+  try {
+    return await initiateCall(req);
+  } catch (err: unknown) {
+    // Surface unexpected failures (e.g. DB schema errors) instead of a bare 500.
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[Initiate] failed:', err);
+    return NextResponse.json({ error: `Could not place call: ${message}` }, { status: 500 });
+  }
+}
+
+async function initiateCall(req: NextRequest) {
   const ctx = await getAuthContext();
   if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
