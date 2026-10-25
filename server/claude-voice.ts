@@ -23,8 +23,8 @@ import {
 
 export type AiEngine = 'claude' | 'openai';
 
-/** Haiku 5.5 is fast and cheap; set CLAUDE_VOICE_MODEL=claude-sonnet-5-5 for harder reps. */
-const MODEL = process.env.CLAUDE_VOICE_MODEL ?? 'claude-haiku-5-5';
+/** Sonnet 5.5 for quality on live calls; set CLAUDE_VOICE_MODEL=claude-haiku-5-5 for faster, cheaper replies. */
+const MODEL = process.env.CLAUDE_VOICE_MODEL ?? 'claude-sonnet-5-5';
 /** How long Deepgram waits after the rep stops talking before calling the turn finished. */
 const ENDPOINTING_MS = Number(process.env.CLAUDE_ENDPOINTING_MS ?? 700);
 const DG_MAX_RETRIES = 5;

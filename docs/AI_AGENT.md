@@ -40,7 +40,7 @@ the Realtime engine in `server/media-ws.ts`.
   call). Falls back to the `AI_ENGINE` env var (`claude` | `openai`), then to Claude when
   `ANTHROPIC_API_KEY` is set, otherwise OpenAI Realtime.
 - **Env:** `ANTHROPIC_API_KEY` (required for Claude). Optional: `CLAUDE_VOICE_MODEL`
-  (default `claude-haiku-5-5`; `claude-sonnet-5-5` for harder reps), `CLAUDE_ENDPOINTING_MS`
+  (default `claude-sonnet-5-5`; `claude-haiku-5-5` for faster, cheaper replies), `CLAUDE_ENDPOINTING_MS`
   (default 700 — how long the rep must pause before Claude answers).
 - **Latency:** thinking is off and effort is `low`; each sentence goes to TTS as soon as Claude
   finishes it. Expect about 1.5–2.5s per turn versus ~0.5s on Realtime.
