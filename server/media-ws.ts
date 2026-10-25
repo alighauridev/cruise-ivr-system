@@ -1109,6 +1109,27 @@ function startClaudeVoice(state: SessionState): void {
     fail: (reason) => {
       if (state.isTerminated || state.aiFinishing) return;
       console.error(`[AI] Claude engine failed (${reason}) callId=${state.callId}`);
+
+      // Claude failed before saying anything (bad key, outage): switch this call to OpenAI Realtime
+      // instead of dropping the rep. Once Claude has spoken, a mid-call failure goes to the team.
+      const hasSpoken = state.aiConversationHistory.some((t) => t.speaker === 'us');
+      if (!hasSpoken && process.env.OPENAI_API_KEY) {
+        console.warn(`[AI] Falling back to OpenAI Realtime callId=${state.callId}`);
+        state.claude?.stop();
+        state.claude = null;
+        state.aiEngine = 'openai';
+        state.aiConversationHistory = []; // so OpenAI plays its opening line instead of replaying
+        sql`
+          INSERT INTO call_events (call_id, event_type, details)
+          VALUES (${state.callId}, 'ai_engine_fallback', ${JSON.stringify({ from: 'claude', to: 'openai', reason })})
+        `.catch(() => {});
+        connectOpenAIRealtime(state).catch((err) => {
+          console.error(`[OpenAI RT] Fallback connect error callId=${state.callId}:`, err);
+          handOffToTeam(state, 'AI voice could not start', 'The AI could not start, so the call was passed straight to the team.').catch(() => {});
+        });
+        return;
+      }
+
       handOffToTeam(state, reason, 'The AI failed during the call, so it was passed to the team.').catch(() => {});
     },
   });
