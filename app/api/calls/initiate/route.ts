@@ -23,6 +23,10 @@ async function initiateCall(req: NextRequest) {
 
   const { leadId, transferNumber, ivrConfigId, aiTask, aiTaskDetails } = await req.json();
 
+  // Agency IATA/CLIA number saved in Settings — used unless the task form overrides it.
+  const agencyRows = await sql`SELECT value FROM settings WHERE user_id = ${ctx.effectiveUserId} AND key = 'agency_id' LIMIT 1`;
+  const defaultAgencyId = (agencyRows[0]?.value as string | undefined)?.trim() || undefined;
+
   // Structured AI task form (preferred) — trim strings, drop unknown keys.
   let taskDetails: AiTaskDetails | null = null;
   if (aiTaskDetails && typeof aiTaskDetails === 'object') {
@@ -37,7 +41,7 @@ async function initiateCall(req: NextRequest) {
         request,
         requestType: rt && rt in REQUEST_TYPES ? (rt as AiTaskDetails['requestType']) : undefined,
         bookingNumber: pick('bookingNumber'),
-        agencyId: pick('agencyId'),
+        agencyId: pick('agencyId') ?? defaultAgencyId,
         guestName: pick('guestName'),
         guestDob: pick('guestDob'),
         shipAndSailDate: pick('shipAndSailDate'),
