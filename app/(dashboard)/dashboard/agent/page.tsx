@@ -616,7 +616,7 @@ export default function AgentPage() {
                   />
                   <p className="text-xs leading-relaxed text-muted">
                     {aiTask.trim()
-                      ? 'The AI introduces itself as an AI assistant for the agency, handles the request, hangs up, and texts you a summary. It hands the rep to the Transfer To number for payment, verification it lacks, or if the rep won’t work with an AI. Never enter card numbers here.'
+                      ? 'The AI makes this request, then texts you a summary. It hands the call to your team for payment or anything it can’t answer. No card numbers here.'
                       : 'Leave blank to use the standard connect message and transfer.'}
                   </p>
                 </div>

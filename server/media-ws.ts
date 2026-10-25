@@ -52,6 +52,8 @@ interface SessionState {
   currentTranscript: string;
   isProcessing: boolean;
   isAgentDetected: boolean;
+  /** Times a bare "Hello?" was heard recently — a person waiting for us to speak (menus don't repeat it). */
+  helloTimes: number[];
   isTerminated: boolean;
   /**
    * Number of TwiML updates we have dispatched to Twilio that have not yet
@@ -220,6 +222,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             currentTranscript: '',
             isProcessing: false,
             isAgentDetected: false,
+            helloTimes: [],
             isTerminated: false,
             pendingRedirects: 0,
             pendingCloses: 0,
@@ -537,6 +540,18 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.isVirtualAssistant = true;
   }
 
+  // 2b. A bare "Hello?" said twice within 20s is a live person waiting for us to speak.
+  // The AI classifier ignores a single "Hello?" (menus say it too), but menus don't repeat it.
+  if (!state.isVirtualAssistant && BARE_GREETING.test(transcript.trim())) {
+    const now = Date.now();
+    state.helloTimes = [...state.helloTimes.filter((t) => now - t < 20_000), now];
+    if (state.helloTimes.length >= 2) {
+      console.log(`[IVR] Repeated "Hello?" — treating as live person callId=${state.callId}`);
+      await handleAgentDetected(state, transcript);
+      return;
+    }
+  }
+
   // 3. Agent detection — phrase match as fast pre-filter, then AI confirmation
   if (!state.isVirtualAssistant && detectAgentFromTranscript(transcript)) {
     // Phrase matched — confirm with AI before triggering transfer
@@ -826,6 +841,9 @@ export async function pressDigitOnCall(callId: string, digit: string): Promise<{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Only a greeting: "Hello?", "Hi.", "Hello? Hello?", "Can you hear me?". */
+const BARE_GREETING = /^(?:(?:hello|hi|hey|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
 
 async function handleAgentDetected(state: SessionState, transcript: string) {
   if (state.isAgentDetected || state.isTerminated) return;
