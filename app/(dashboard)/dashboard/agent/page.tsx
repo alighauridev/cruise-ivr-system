@@ -566,11 +566,11 @@ export default function AgentPage() {
                     {AI_REQUEST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                   <textarea
-                    rows={2}
+                    rows={7}
                     placeholder='Exact request, e.g. "Add guest to the waitlist for the Denali tundra tour on Aug 12"'
                     value={aiForm.request}
                     onChange={(e) => setAiField('request', e.target.value)}
-                    className="input"
+                    className="input min-h-[180px] !resize-y text-[15px]"
                   />
                   {aiTask.trim() && (
                     <>
