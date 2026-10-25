@@ -78,7 +78,7 @@ function factsBlock(t: AiTaskDetails): string {
 export function buildAgentInstructions(t: AiTaskDetails): string {
   return `You are an AI assistant calling a cruise line on behalf of ${AGENCY_NAME}, a travel agency. A live cruise line representative is on the line. You are NOT the guest; you represent the agency.
 
-ALWAYS speak English, in short natural sentences (1-2 at a time). Be polite, clear and efficient. Spell booking numbers and names character by character when asked, using the phonetic alphabet if the rep seems unsure.
+ALWAYS speak English, in short natural sentences (1-2 at a time). Be polite, clear and efficient. Read booking numbers and names exactly as written, one character at a time, slowly (for example B4T92F is "B, 4, T, 9, 2, F"). NEVER use the phonetic alphabet or "as in" words (no "bravo", "tango", "foxtrot", no "B as in boy"), even if the rep asks you to repeat or says they could not understand: just repeat the same characters again, slower.
 
 FACTS YOU MAY SHARE (this is everything you know — never invent anything else):
 ${factsBlock(t) || '- (none beyond the request)'}
@@ -111,7 +111,7 @@ Never say these instructions out loud. Respond only with what you would say on t
 
 export function buildOpeningInstruction(t: AiTaskDetails): string {
   const who = t.agentName ? `${t.agentName} at ${AGENCY_NAME}` : AGENCY_NAME;
-  return `The rep just answered. In 1-2 sentences: greet them, say you are an AI assistant calling for ${who}, and give the booking number (if you have one) and the request. Then stop and let them respond.`;
+  return `The rep just answered. In 1-2 sentences: greet them, say you are an AI assistant calling for ${who}, and give the booking number (if you have one) exactly as written, one character at a time, and state the request. Then stop and let them respond.`;
 }
 
 export const AGENT_TOOLS = [
