@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
-import { Geist } from 'next/font/google';
+import { Figtree, Fraunces } from 'next/font/google';
 import './globals.css';
 import SessionProvider from '@/components/SessionProvider';
 
-const geist = Geist({ subsets: ['latin'], variable: '--font-geist' });
+const figtree = Figtree({ subsets: ['latin'], variable: '--font-figtree' });
+const fraunces = Fraunces({ subsets: ['latin'], variable: '--font-fraunces' });
 
 export const metadata: Metadata = {
   title: 'CruisePro IVR System',
@@ -12,8 +13,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geist.variable} h-full`} suppressHydrationWarning>
-      <body className="h-full bg-gray-950 text-gray-100 font-sans antialiased">
+    <html lang="en" className={`${figtree.variable} ${fraunces.variable} h-full`} suppressHydrationWarning>
+      <body className="h-full bg-canvas font-sans text-ink antialiased">
         <SessionProvider>{children}</SessionProvider>
       </body>
     </html>

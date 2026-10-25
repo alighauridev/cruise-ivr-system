@@ -1,0 +1,1188 @@
+From bc8e8f6fd34d0d483adf959eb983457889a13719 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 21 Oct 2026 07:05:05 -0500
+Subject: [PATCH] Rebuild AI call agent conversation layer
+
+- AI discloses itself and speaks for the agency from a structured task form
+- No connect message / no TwiML redirect when the rep answers (fixes lost greeting)
+- end_call and transfer_to_team tools; hang up after goodbye; hand off to team
+- Barge-in clears queued audio; hang up on post-call surveys
+- Save ai_outcome/ai_summary, show in Call Logs, SMS summary
+- Fallback summary when calls end otherwise; max-duration runs cleanup
+- Migration db/migrations/phase4.sql (run before deploy)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NYmkj6qpW4TNfJPHKoNEfM
+---
+ app/(dashboard)/dashboard/agent/page.tsx     | 107 ++++-
+ app/(dashboard)/dashboard/call-logs/page.tsx |  26 ++
+ app/api/calls/initiate/route.ts              |  32 +-
+ db/migrations/phase4.sql                     |   9 +
+ docs/AI_AGENT.md                             |  48 +++
+ server/ai-call-agent.ts                      | 216 ++++++++++
+ server/conversation-engine.ts                |  15 +-
+ server/media-ws.ts                           | 425 +++++++++++++------
+ 8 files changed, 733 insertions(+), 145 deletions(-)
+ create mode 100644 db/migrations/phase4.sql
+ create mode 100644 docs/AI_AGENT.md
+ create mode 100644 server/ai-call-agent.ts
+
+diff --git a/app/(dashboard)/dashboard/agent/page.tsx b/app/(dashboard)/dashboard/agent/page.tsx
+index 86814ba..8a995d5 100644
+--- a/app/(dashboard)/dashboard/agent/page.tsx
++++ b/app/(dashboard)/dashboard/agent/page.tsx
+@@ -91,6 +91,42 @@ function formatDuration(seconds: number): string {
+   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+ }
+ 
++interface AiTaskForm {
++  requestType: string;
++  request: string;
++  bookingNumber: string;
++  guestName: string;
++  guestDob: string;
++  shipAndSailDate: string;
++  agencyId: string;
++  agentName: string;
++  mayAgreeTo: string;
++}
++
++const EMPTY_AI_FORM: AiTaskForm = {
++  requestType: 'waitlist', request: '', bookingNumber: '', guestName: '', guestDob: '',
++  shipAndSailDate: '', agencyId: '', agentName: '', mayAgreeTo: '',
++};
++
++// Start with low-risk requests that need no payment.
++const AI_REQUEST_TYPES = [
++  { value: 'waitlist', label: 'Waitlist (tour, cabin, dining)' },
++  { value: 'status_check', label: 'Check status of a booking/request' },
++  { value: 'resend_confirmation', label: 'Resend confirmation/documents' },
++  { value: 'addon_no_payment', label: 'Add-on that needs no payment' },
++  { value: 'question', label: 'Question about a booking/policy' },
++  { value: 'other', label: 'Other' },
++];
++
++const AI_TEXT_FIELDS: Array<{ key: keyof AiTaskForm; label: string }> = [
++  { key: 'bookingNumber', label: 'Booking #' },
++  { key: 'guestName', label: 'Lead guest name' },
++  { key: 'guestDob', label: 'Guest DOB (MM/DD/YYYY)' },
++  { key: 'shipAndSailDate', label: 'Ship & sail date' },
++  { key: 'agencyId', label: 'Agency IATA/CLIA #' },
++  { key: 'agentName', label: 'Calling for (your name)' },
++];
++
+ export default function AgentPage() {
+   const [leads, setLeads] = useState<Lead[]>([]);
+   const [ivrConfigs, setIvrConfigs] = useState<IVRConfig[]>([]);
+@@ -98,7 +134,22 @@ export default function AgentPage() {
+   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+   const [selectedIvrConfigId, setSelectedIvrConfigId] = useState<string>('');
+   const [selectedTransferNumberId, setSelectedTransferNumberId] = useState<string>('');
+-  const [aiTask, setAiTask] = useState('');
++  const [aiForm, setAiForm] = useState<AiTaskForm>(EMPTY_AI_FORM);
++  const aiTask = aiForm.request;
++  const setAiField = (k: keyof AiTaskForm, v: string) => {
++    setAiForm((f) => ({ ...f, [k]: v }));
++    // Remember who's calling and the agency ID between calls (this browser only).
++    if (k === 'agencyId' || k === 'agentName') {
++      try { localStorage.setItem(`cruisepro.${k}`, v); } catch {}
++    }
++  };
++  useEffect(() => {
++    try {
++      const agencyId = localStorage.getItem('cruisepro.agencyId') ?? '';
++      const agentName = localStorage.getItem('cruisepro.agentName') ?? '';
++      if (agencyId || agentName) setAiForm((f) => ({ ...f, agencyId, agentName }));
++    } catch {}
++  }, []);
+   const [search, setSearch] = useState('');
+   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+   const [callLoading, setCallLoading] = useState(false);
+@@ -266,7 +317,7 @@ export default function AgentPage() {
+         leadId: selectedLead.id,
+         ivrConfigId: selectedIvrConfigId || undefined,
+         transferNumber: selectedTransferNumber?.phone,
+-        aiTask: aiTask.trim() || undefined,
++        aiTaskDetails: aiTask.trim() ? aiForm : undefined,
+       }),
+     });
+ 
+@@ -486,20 +537,52 @@ export default function AgentPage() {
+                 </div>
+               )}
+ 
+-              {/* AI Task input */}
+-              <div>
+-                <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">Task for AI Agent</label>
++              {/* AI Task form */}
++              <div className="space-y-2">
++                <label className="text-xs text-gray-500 uppercase tracking-wider block">Task for AI Agent (optional)</label>
++                <select
++                  value={aiForm.requestType}
++                  onChange={(e) => setAiField('requestType', e.target.value)}
++                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500"
++                >
++                  {AI_REQUEST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
++                </select>
+                 <textarea
+-                  rows={3}
+-                  placeholder={`What do you need? e.g. "Book a 7-night Caribbean cruise for 2 adults, June 15 departure, budget $3500"`}
+-                  value={aiTask}
+-                  onChange={(e) => setAiTask(e.target.value)}
++                  rows={2}
++                  placeholder='Exact request, e.g. "Add guest to the waitlist for the Denali tundra tour on Aug 12"'
++                  value={aiForm.request}
++                  onChange={(e) => setAiField('request', e.target.value)}
+                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 resize-none"
+                 />
+-                <p className="text-xs text-gray-600 mt-1">
++                {aiTask.trim() && (
++                  <>
++                    <div className="grid grid-cols-2 gap-2">
++                      {AI_TEXT_FIELDS.map((f) => (
++                        <input
++                          key={f.key}
++                          placeholder={f.label}
++                          value={aiForm[f.key]}
++                          onChange={(e) => setAiField(f.key, e.target.value)}
++                          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
++                        />
++                      ))}
++                    </div>
++                    <textarea
++                      rows={2}
++                      placeholder='What the AI may agree to, e.g. "Any waitlist position; nothing that changes price"'
++                      value={aiForm.mayAgreeTo}
++                      onChange={(e) => setAiField('mayAgreeTo', e.target.value)}
++                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 resize-none"
++                    />
++                    {!aiForm.bookingNumber.trim() && aiForm.requestType !== 'question' && (
++                      <p className="text-yellow-500 text-xs">Most reps will ask for the booking number.</p>
++                    )}
++                  </>
++                )}
++                <p className="text-xs text-gray-600">
+                   {aiTask.trim()
+-                    ? 'AI will speak this task to the agent and handle the conversation.'
+-                    : 'Leave blank to use the standard connect message.'}
++                    ? 'The AI introduces itself as an AI assistant for the agency, handles the request, hangs up, and texts you a summary. It hands the rep to the Transfer To number for payment, verification it lacks, or if the rep won\u2019t work with an AI. Never enter card numbers here.'
++                    : 'Leave blank to use the standard connect message and transfer.'}
+                 </p>
+               </div>
+ 
+diff --git a/app/(dashboard)/dashboard/call-logs/page.tsx b/app/(dashboard)/dashboard/call-logs/page.tsx
+index d50b130..ee8bee1 100644
+--- a/app/(dashboard)/dashboard/call-logs/page.tsx
++++ b/app/(dashboard)/dashboard/call-logs/page.tsx
+@@ -13,6 +13,9 @@ interface Call {
+   created_at: string;
+   agent_detected_time: string | null;
+   error_message: string | null;
++  ai_task: string | null;
++  ai_outcome: string | null;
++  ai_summary: string | null;
+   recording_url: string | null;
+   transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
+   owner_name?: string;
+@@ -21,6 +24,15 @@ interface Call {
+ 
+ const PAGE_SIZE = 25;
+ 
++const AI_OUTCOME_LABEL: Record<string, string> = {
++  resolved: 'Done',
++  partial: 'Partly done',
++  not_resolved: 'Not done',
++  handed_off: 'Handed to team',
++  rep_refused_ai: 'Rep would not work with AI',
++  disconnected: 'Call dropped',
++};
++
+ const STATUS_BADGE: Record<string, string> = {
+   completed: 'bg-green-900/50 text-green-400 border-green-700/50',
+   connected: 'bg-blue-900/50 text-blue-400 border-blue-700/50',
+@@ -204,6 +216,20 @@ export default function CallLogsPage() {
+                     <tr key={`${call.id}-transcript`} className="border-b border-gray-800/50">
+                       <td colSpan={8} className="px-4 py-0">
+                         <div className="bg-gray-900/80 rounded-xl border border-gray-800 my-2 p-4 max-h-96 overflow-y-auto">
++                          {call.ai_task && (
++                            <div className="mb-4 rounded-lg border border-purple-800/50 bg-purple-950/30 p-3 text-sm">
++                              <div className="flex items-center gap-2 mb-1">
++                                <span className="text-xs text-purple-300 uppercase tracking-wider font-semibold">AI task</span>
++                                {call.ai_outcome && (
++                                  <span className="text-xs px-2 py-0.5 rounded-full border border-purple-700/60 text-purple-200">
++                                    {AI_OUTCOME_LABEL[call.ai_outcome] ?? call.ai_outcome}
++                                  </span>
++                                )}
++                              </div>
++                              <p className="text-gray-300">{call.ai_task}</p>
++                              {call.ai_summary && <p className="text-gray-100 mt-2 whitespace-pre-wrap">{call.ai_summary}</p>}
++                            </div>
++                          )}
+                           <h4 className="text-xs text-gray-500 uppercase tracking-wider mb-3 font-semibold">Call Transcript</h4>
+                           {call.transcript?.utterances && call.transcript.utterances.length > 0 ? (
+                             <div className="space-y-2">
+diff --git a/app/api/calls/initiate/route.ts b/app/api/calls/initiate/route.ts
+index 87ac7a5..9dcac3a 100644
+--- a/app/api/calls/initiate/route.ts
++++ b/app/api/calls/initiate/route.ts
+@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
+ import sql from '@/lib/db';
+ import { getAuthContext } from '@/lib/admin';
+ import { twilioClient, twilioPhone } from '@/lib/twilio';
++import { AiTaskDetails, REQUEST_TYPES, taskToText } from '@/server/ai-call-agent';
+ 
+ export async function POST(req: NextRequest) {
+   const ctx = await getAuthContext();
+@@ -9,7 +10,32 @@ export async function POST(req: NextRequest) {
+     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+   }
+ 
+-  const { leadId, transferNumber, ivrConfigId, aiTask } = await req.json();
++  const { leadId, transferNumber, ivrConfigId, aiTask, aiTaskDetails } = await req.json();
++
++  // Structured AI task form (preferred) — trim strings, drop unknown keys.
++  let taskDetails: AiTaskDetails | null = null;
++  if (aiTaskDetails && typeof aiTaskDetails === 'object') {
++    const pick = (k: string) => {
++      const v = (aiTaskDetails as Record<string, unknown>)[k];
++      return typeof v === 'string' && v.trim() ? v.trim().slice(0, 1000) : undefined;
++    };
++    const request = pick('request');
++    if (request) {
++      const rt = pick('requestType');
++      taskDetails = {
++        request,
++        requestType: rt && rt in REQUEST_TYPES ? (rt as AiTaskDetails['requestType']) : undefined,
++        bookingNumber: pick('bookingNumber'),
++        agencyId: pick('agencyId'),
++        guestName: pick('guestName'),
++        guestDob: pick('guestDob'),
++        shipAndSailDate: pick('shipAndSailDate'),
++        mayAgreeTo: pick('mayAgreeTo'),
++        agentName: pick('agentName'),
++      };
++    }
++  }
++  const aiTaskText: string | null = taskDetails ? taskToText(taskDetails) : (typeof aiTask === 'string' && aiTask.trim() ? aiTask.trim() : null);
+   if (!leadId) {
+     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
+   }
+@@ -60,8 +86,8 @@ export async function POST(req: NextRequest) {
+   const toNumber = toE164(lead.phone_number as string);
+ 
+   const callRows = await sql`
+-    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task)
+-    VALUES (${ownerId}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTask ?? null})
++    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task, ai_task_details)
++    VALUES (${ownerId}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTaskText}, ${taskDetails ? JSON.stringify(taskDetails) : null})
+     RETURNING id
+   `;
+   const callId = callRows[0].id as string;
+diff --git a/db/migrations/phase4.sql b/db/migrations/phase4.sql
+new file mode 100644
+index 0000000..af3e7b6
+--- /dev/null
++++ b/db/migrations/phase4.sql
+@@ -0,0 +1,9 @@
++-- Phase 4 migration: AI call agent rebuild
++-- Run once against the production database (safe to re-run).
++
++-- Structured task form (booking number, guest, request, what the AI may agree to, etc.)
++ALTER TABLE calls ADD COLUMN IF NOT EXISTS ai_task_details JSONB;
++
++-- Outcome written when the AI ends or hands off the call
++ALTER TABLE calls ADD COLUMN IF NOT EXISTS ai_outcome VARCHAR(30);
++ALTER TABLE calls ADD COLUMN IF NOT EXISTS ai_summary TEXT;
+diff --git a/docs/AI_AGENT.md b/docs/AI_AGENT.md
+new file mode 100644
+index 0000000..0806fc3
+--- /dev/null
++++ b/docs/AI_AGENT.md
+@@ -0,0 +1,48 @@
++# AI call agent (rebuild, Oct 2026)
++
++When a call has an AI task and a live rep answers, an OpenAI Realtime agent talks to
++the rep for Military Cruise Deals. Code: `server/ai-call-agent.ts` (prompt, tools,
++summaries) and the "OpenAI Realtime API" section of `server/media-ws.ts`.
++
++## Behavior
++
++- No connect message and no TwiML redirect on AI calls. The stream is already
++  bidirectional, so the AI's opening line plays immediately. (The old redirect tore
++  the stream down while the greeting was being sent; reps heard silence.)
++- First sentence: "AI assistant calling for <advisor> at Military Cruise Deals",
++  booking number, request.
++- Works only from the task form. Never invents facts. Never reads or accepts card numbers.
++- Tools:
++  - `end_call(outcome, summary)`: after saying goodbye. Waits for the goodbye audio to
++    finish playing (Twilio mark, 8s fallback), saves outcome + summary, hangs up.
++  - `transfer_to_team(reason, summary)`: for payment, missing verification, a rep who
++    won't work with an AI, or confusion. Rep hears "please hold"; the Transfer To
++    number rings with a spoken reason; both join one conference.
++- Barge-in: when the rep talks over the AI, queued AI audio is cleared.
++- Hangs up when a recorded post-call survey starts.
++- If the call ends any other way (rep hangs up, max duration, AI voice drops), a
++  summary + outcome is generated from the transcript. If the AI voice drops while the
++  rep is still on, the call is handed to the team.
++- Outcome + summary are saved on `calls.ai_outcome` / `calls.ai_summary`, shown in
++  Call Logs, and texted to the user's notification phone when
++  `NOTIFICATION_SMS_ENABLED=true`.
++- The legacy Deepgram→GPT→TTS conversation path is no longer used for AI calls.
++
++## Deploy checklist
++
++1. Run `db/migrations/phase4.sql` in the Neon SQL editor **before** deploying.
++   (The call-initiate API writes `ai_task_details`; without the column every call fails.)
++2. Optional env vars on Render: `AGENCY_NAME` (default "Military Cruise Deals"),
++   `OPENAI_REALTIME_MODEL` (default `gpt-4o-realtime-preview`),
++   `NOTIFICATION_SMS_ENABLED=true` for summary texts.
++3. Merge to `master` (Render auto-deploys on commit).
++4. Test: AI task call to a team member's phone acting as the rep, Transfer To = Mitch's
++   cell (not the 866 line). Check opening line, a handoff, a clean end_call, Call Logs
++   summary, and the SMS. Then one low-risk real call (waitlist / status check).
++
++## Not changed yet (from the Oct 20 review)
++
++- Business-hours / holiday check per cruise line.
++- Carnival Existing Booking script stalls at "Have your booking number? Press 1".
++- Calls stuck in navigating_ivr / on_hold / connected.
++- Transfers to the 866 line get answered by the AI greeter.
+diff --git a/server/ai-call-agent.ts b/server/ai-call-agent.ts
+new file mode 100644
+index 0000000..b92a671
+--- /dev/null
++++ b/server/ai-call-agent.ts
+@@ -0,0 +1,216 @@
++/**
++ * AI call agent — conversation layer for calls that carry an AI task.
++ *
++ * The agent speaks for Military Cruise Deals (a travel agency) to a cruise line
++ * rep. It always says it is an AI assistant, works only from the task form, never
++ * handles payment details, and uses two tools:
++ *   - end_call:         say goodbye, then hang up with an outcome + summary
++ *   - transfer_to_team: hand the rep to a person on the team
++ */
++import OpenAI from 'openai';
++
++const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
++
++export const AGENCY_NAME = process.env.AGENCY_NAME ?? 'Military Cruise Deals';
++
++export const REQUEST_TYPES = {
++  waitlist: 'Add the guest to a waitlist',
++  status_check: 'Check the status of a booking or request',
++  resend_confirmation: 'Resend a confirmation or documents',
++  addon_no_payment: 'Add or change an item that needs no payment',
++  question: 'Ask a question about a booking or policy',
++  other: 'Other',
++} as const;
++export type RequestType = keyof typeof REQUEST_TYPES;
++
++export interface AiTaskDetails {
++  requestType?: RequestType;
++  bookingNumber?: string;
++  agencyId?: string; // IATA / CLIA number
++  guestName?: string;
++  guestDob?: string;
++  shipAndSailDate?: string;
++  request: string; // the exact ask, in plain words
++  mayAgreeTo?: string; // what the AI may accept without checking back
++  agentName?: string; // team member the AI is calling for
++}
++
++export type AiOutcome = 'resolved' | 'partial' | 'not_resolved' | 'handed_off' | 'rep_refused_ai' | 'disconnected';
++
++/** Build a task object from either the structured form or the legacy free-text field. */
++export function resolveTask(details: unknown, legacyText: string | null): AiTaskDetails | null {
++  if (details && typeof details === 'object' && typeof (details as AiTaskDetails).request === 'string') {
++    const d = details as AiTaskDetails;
++    if (d.request.trim()) return d;
++  }
++  if (legacyText && legacyText.trim()) return { request: legacyText.trim() };
++  return null;
++}
++
++/** One-line plain-text version stored in calls.ai_task for the dashboard. */
++export function taskToText(t: AiTaskDetails): string {
++  const parts = [
++    t.requestType && t.requestType !== 'other' ? REQUEST_TYPES[t.requestType] : null,
++    t.bookingNumber ? `booking ${t.bookingNumber}` : null,
++    t.guestName ? `guest ${t.guestName}` : null,
++    t.request,
++  ].filter(Boolean);
++  return parts.join(' — ');
++}
++
++function factsBlock(t: AiTaskDetails): string {
++  const rows: Array<[string, string | undefined]> = [
++    ['Agency', AGENCY_NAME],
++    ['Agency ID (IATA/CLIA)', t.agencyId],
++    ['Calling on behalf of', t.agentName ? `${t.agentName}, travel advisor at ${AGENCY_NAME}` : undefined],
++    ['Booking number', t.bookingNumber],
++    ['Lead guest name', t.guestName],
++    ['Lead guest date of birth', t.guestDob],
++    ['Ship and sail date', t.shipAndSailDate],
++    ['Request type', t.requestType ? REQUEST_TYPES[t.requestType] : undefined],
++  ];
++  return rows
++    .filter(([, v]) => v && v.trim())
++    .map(([k, v]) => `- ${k}: ${v!.trim()}`)
++    .join('\n');
++}
++
++export function buildAgentInstructions(t: AiTaskDetails): string {
++  return `You are an AI assistant calling a cruise line on behalf of ${AGENCY_NAME}, a travel agency. A live cruise line representative is on the line. You are NOT the guest; you represent the agency.
++
++ALWAYS speak English, in short natural sentences (1-2 at a time). Be polite, clear and efficient. Spell booking numbers and names character by character when asked, using the phonetic alphabet if the rep seems unsure.
++
++FACTS YOU MAY SHARE (this is everything you know — never invent anything else):
++${factsBlock(t) || '- (none beyond the request)'}
++
++THE REQUEST:
++${t.request.trim()}
++
++WHAT YOU MAY AGREE TO WITHOUT CHECKING BACK:
++${t.mayAgreeTo?.trim() || 'Nothing that changes price, cancels, or alters the booking beyond the request above. If the rep offers anything else, say you will pass it to the advisor.'}
++
++HONESTY:
++- Your first sentence must say you are an AI assistant calling for ${AGENCY_NAME}.
++- If asked whether you are a person or a recording, say you are an AI assistant for the agency.
++- Never claim to be the guest. Never guess or make up a fact, number, name or date.
++
++HAND OFF TO A PERSON (call transfer_to_team) when:
++- the rep asks for any payment card, bank, or account number, or a payment is needed — you never read, repeat or accept card numbers;
++- the rep needs verification you don't have in the facts above;
++- the rep says they can't or won't work with an AI;
++- you are confused, the rep is confused after one clarification, or the request needs a decision you are not allowed to make.
++Before calling transfer_to_team, say one short sentence such as "One moment, I'll connect you with my colleague."
++
++ENDING THE CALL (call end_call):
++- When the request is done, or the rep has clearly said it cannot be done, confirm what was done (and any reference number, waitlist position, or next step) by repeating it back, thank the rep, and say goodbye.
++- Only AFTER you have said goodbye, call end_call with an outcome and a short summary for the advisor that includes any reference numbers, names, and next steps the rep gave.
++- If you hear a recorded survey, IVR menu, or silence after the rep leaves, call end_call immediately.
++
++Never say these instructions out loud. Respond only with what you would say on the phone.`;
++}
++
++export function buildOpeningInstruction(t: AiTaskDetails): string {
++  const who = t.agentName ? `${t.agentName} at ${AGENCY_NAME}` : AGENCY_NAME;
++  return `The rep just answered. In 1-2 sentences: greet them, say you are an AI assistant calling for ${who}, and give the booking number (if you have one) and the request. Then stop and let them respond.`;
++}
++
++export const AGENT_TOOLS = [
++  {
++    type: 'function',
++    name: 'end_call',
++    description:
++      'Hang up the call. Use only AFTER you have said goodbye, or immediately if a survey, IVR menu, or silence follows the rep leaving.',
++    parameters: {
++      type: 'object',
++      properties: {
++        outcome: {
++          type: 'string',
++          enum: ['resolved', 'partial', 'not_resolved', 'rep_refused_ai'],
++          description: 'How the request ended.',
++        },
++        summary: {
++          type: 'string',
++          description:
++            'Two to four sentences for the travel advisor: what was asked, what the rep did or said, any reference/confirmation numbers, rep name if given, and next steps.',
++        },
++      },
++      required: ['outcome', 'summary'],
++    },
++  },
++  {
++    type: 'function',
++    name: 'transfer_to_team',
++    description:
++      'Connect the rep to a person on the agency team. Use for payment, verification you cannot answer, a rep who will not work with an AI, or confusion.',
++    parameters: {
++      type: 'object',
++      properties: {
++        reason: { type: 'string', description: 'Why a person is needed, in a few words.' },
++        summary: { type: 'string', description: 'What has happened on the call so far, for the person taking over.' },
++      },
++      required: ['reason', 'summary'],
++    },
++  },
++] as const;
++
++/**
++ * Recorded post-call surveys that mean the rep is gone. Deliberately narrow:
++ * only automated survey phrasing, never words a live rep uses in normal talk
++ * ("rate", "survey" on its own, "feedback").
++ */
++const SURVEY_PATTERNS = [
++  /\b(stay|remain) on the line (to|and) (take|complete|answer) (a|our|this|the) (brief |short |quick )?survey/i,
++  /\bon a scale (of|from) (1|one|0|zero) to (5|five|10|ten)\b/i,
++  /\bpress (\d|one|two|nine) (if|for) (you were |you are )?(very |extremely )?(satisfied|dissatisfied|likely|unlikely|yes|no)\b/i,
++  /\b(this|the following) (brief |short )?survey (will|should) take\b/i,
++];
++
++export function looksLikeSurveyOrIvr(text: string): boolean {
++  return SURVEY_PATTERNS.some((re) => re.test(text));
++}
++
++/** Fallback summary when the call ended without the AI calling end_call (e.g. rep hung up). */
++export async function summarizeTranscript(
++  task: AiTaskDetails,
++  turns: Array<{ speaker: 'agent' | 'us'; text: string }>
++): Promise<{ outcome: AiOutcome; summary: string }> {
++  if (turns.length === 0) {
++    return { outcome: 'disconnected', summary: 'The call ended before any conversation with the rep.' };
++  }
++  const transcript = turns.map((t) => `${t.speaker === 'agent' ? 'REP' : 'AI'}: ${t.text}`).join('\n');
++  try {
++    const r = await openai.chat.completions.create({
++      model: 'gpt-4o-mini',
++      temperature: 0,
++      max_tokens: 220,
++      response_format: { type: 'json_object' },
++      messages: [
++        {
++          role: 'system',
++          content:
++            'You review a cruise line phone call made by an AI assistant for a travel agency. Return JSON {"outcome": one of "resolved","partial","not_resolved","rep_refused_ai","disconnected", "summary": 2-4 plain sentences for the travel advisor: what was asked, what the rep did or said, any reference numbers or rep name, and next steps}. Use "disconnected" if the call cut off before the request was settled. Do not invent anything.',
++        },
++        { role: 'user', content: `Request: ${task.request}\n\nTranscript:\n${transcript}` },
++      ],
++    });
++    const parsed = JSON.parse(r.choices[0]?.message?.content ?? '{}');
++    const valid: AiOutcome[] = ['resolved', 'partial', 'not_resolved', 'rep_refused_ai', 'disconnected'];
++    return {
++      outcome: valid.includes(parsed.outcome) ? parsed.outcome : 'disconnected',
++      summary: typeof parsed.summary === 'string' && parsed.summary.trim() ? parsed.summary.trim() : 'Call ended; see the transcript.',
++    };
++  } catch {
++    return { outcome: 'disconnected', summary: 'Call ended; summary could not be generated. See the transcript.' };
++  }
++}
++
++export function outcomeLabel(o: AiOutcome): string {
++  return {
++    resolved: 'Done',
++    partial: 'Partly done',
++    not_resolved: 'Not done',
++    handed_off: 'Handed to team',
++    rep_refused_ai: 'Rep would not work with AI',
++    disconnected: 'Call dropped',
++  }[o];
++}
+diff --git a/server/conversation-engine.ts b/server/conversation-engine.ts
+index 6c875be..51e5f6d 100644
+--- a/server/conversation-engine.ts
++++ b/server/conversation-engine.ts
+@@ -13,19 +13,16 @@ function buildSystemPrompt(aiTask: string | null): string {
+     ? `Your task for this call: ${aiTask}`
+     : 'Your task: gather information about cruise options and pricing.';
+ 
+-  return `You are a polite customer who has called a cruise line. A live agent has just answered. You are speaking to them directly on the phone.
++  return `You are an AI assistant calling a cruise line on behalf of Military Cruise Deals, a travel agency. A live cruise line representative is on the line.
+ 
+ ${taskLine}
+ 
+ Rules:
+-- Be natural and conversational — you are a real customer on the phone
+-- Speak in 1-2 short sentences maximum per response
+-- When the agent asks for personal details you don't have (full name, address, payment info), say something like "Let me just confirm that with my partner, one moment" or "I'll need to check that, could you hold briefly?"
+-- If the agent seems confused or asks to speak to a manager, say: "Of course, let me get them for you right away."
+-- Never break character or mention you are an AI
+-- Express genuine interest and enthusiasm about the cruise
+-- If the agent says they can't hear you or something is wrong with the line, say "Hello? Can you hear me? Sorry about that."
+-- Stay focused on the task — don't go off-topic
++- Speak in 1-2 short, natural sentences per response, in English
++- You represent the agency, not the guest. If asked, say you are an AI assistant for Military Cruise Deals
++- Never invent names, numbers, dates or details you were not given
++- Never read, repeat or accept payment card or bank numbers; if payment or verification you don't have is needed, say "One moment, I'll connect you with my colleague."
++- Stay focused on the task
+ 
+ Respond ONLY with what you would say aloud. No stage directions, no quotes, no explanations.`;
+ }
+diff --git a/server/media-ws.ts b/server/media-ws.ts
+index 830754f..fcefc21 100644
+--- a/server/media-ws.ts
++++ b/server/media-ws.ts
+@@ -5,7 +5,19 @@ import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigato
+ import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
+ import { notifyAgentDetected } from '@/lib/notifications';
+ import { generateTTSMulaw, streamTTSMulaw } from '@/lib/openai-tts';
+-import { generateConversationResponse, ConversationTurn as ConvTurn } from './conversation-engine';
++import { ConversationTurn as ConvTurn } from './conversation-engine';
++import {
++  AiOutcome,
++  AiTaskDetails,
++  AGENT_TOOLS,
++  buildAgentInstructions,
++  buildOpeningInstruction,
++  looksLikeSurveyOrIvr,
++  outcomeLabel,
++  resolveTask,
++  summarizeTranscript,
++} from './ai-call-agent';
++import { sendSMS } from '@/lib/twilio';
+ 
+ import { IVRExecutor, ExecutorAction } from './ivr-executor';
+ import { IVRStep } from '@/lib/ivr-engine';
+@@ -83,6 +95,20 @@ interface SessionState {
+   openaiRtWs: WebSocket | null;
+   /** Accumulate AI response text across delta events for DB storage. */
+   aiResponseBuffer: string;
++  /** Structured task form for the AI agent (falls back to aiTask free text). */
++  aiTaskDetails: AiTaskDetails | null;
++  /** Set once end_call / transfer_to_team / survey-cutoff has started — the AI stops talking. */
++  aiFinishing: boolean;
++  /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
++  aiOutcomeSaved: boolean;
++  /** Twilio mark name that, when played, triggers the pending finish action. */
++  pendingFinishMark: string | null;
++  pendingFinishAction: (() => Promise<void>) | null;
++  finishFallbackTimer: ReturnType<typeof setTimeout> | null;
++  /** True while OpenAI is generating a response (used for barge-in). */
++  rtResponseActive: boolean;
++  /** Mark sent after the AI's latest response; non-null while that audio is still playing. */
++  aiPlaybackMark: string | null;
+ }
+ 
+ const BASE_URL = () =>
+@@ -206,6 +232,14 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
+             aiTask: null,
+             openaiRtWs: null,
+             aiResponseBuffer: '',
++            aiTaskDetails: null,
++            aiFinishing: false,
++            aiOutcomeSaved: false,
++            pendingFinishMark: null,
++            pendingFinishAction: null,
++            finishFallbackTimer: null,
++            rtResponseActive: false,
++            aiPlaybackMark: null,
+           };
+ 
+           callSessions.set(callId, state!);
+@@ -239,6 +273,13 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
+             // Give 300ms buffer after playback before listening for agent reply
+             setTimeout(() => { if (state) state.isConvSpeaking = false; }, 300);
+           }
++          if (state && state.aiPlaybackMark && msg.mark?.name === state.aiPlaybackMark) {
++            state.aiPlaybackMark = null;
++          }
++          if (state && state.pendingFinishMark && msg.mark?.name === state.pendingFinishMark) {
++            // The AI's last sentence has finished playing — now hang up / hand off.
++            runPendingFinish(state);
++          }
+           break;
+         }
+ 
+@@ -432,7 +473,8 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
+ 
+     dgSocket.on('close', (code: number, reason: Buffer) => {
+       console.log(`[Deepgram] Closed callId=${state.callId} code=${code} reason=${reason?.toString()}`);
+-      if (!state.isTerminated && attempt < DG_RETRY_DELAYS.length) {
++      // In AI conversation mode OpenAI Realtime does the listening — don't reconnect Deepgram.
++      if (!state.isTerminated && !state.aiConversationMode && attempt < DG_RETRY_DELAYS.length) {
+         const delay = DG_RETRY_DELAYS[attempt] ?? 4000;
+         console.log(`[Deepgram] Retrying in ${delay}ms (attempt ${attempt + 1})`);
+         setTimeout(() => connectDeepgram(state, attempt + 1), delay);
+@@ -453,11 +495,10 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
+ 
+   // Route to conversation processor when in AI conversation mode
+   if (state.aiConversationMode) {
+-    if (state.isConvSpeaking) {
+-      console.log(`[ConvMode] Suppressed transcript (AI speaking): "${transcript.substring(0, 60)}"`);
+-    } else {
+-      await processConversationSpeech(state, transcript);
+-    }
++    // OpenAI Realtime handles listening + replying. Deepgram transcripts that arrive
++    // during the switchover must not trigger the legacy Deepgram→GPT→TTS pipeline:
++    // it double-replied and its prompt posed as the guest. If Realtime fails, the
++    // call is handed to the team instead (see connectOpenAIRealtime).
+     return;
+   }
+ 
+@@ -699,35 +740,6 @@ async function dispatchConversationSay(state: SessionState, text: string): Promi
+   }
+ }
+ 
+-/** Called when the cruise agent speaks during AI conversation mode. */
+-async function processConversationSpeech(state: SessionState, transcript: string): Promise<void> {
+-  // Set immediately (before any await) to prevent concurrent calls from both
+-  // generating a response when two transcripts arrive at the same time.
+-  state.isConvSpeaking = true;
+-  state.lastTranscriptAt = Date.now();
+-  console.log(`[ConvMode] Agent said: "${transcript}" callId=${state.callId}`);
+-
+-  await sql`
+-    INSERT INTO call_events (call_id, event_type, details)
+-    VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: transcript, speaker: 'agent', timestamp: Date.now() })})
+-  `.catch(() => {});
+-
+-  state.aiConversationHistory.push({ speaker: 'agent', text: transcript, timestamp: Date.now() });
+-
+-  try {
+-    const response = await generateConversationResponse(state.aiConversationHistory, state.callId, state.aiTask);
+-    if (response) {
+-      await dispatchConversationSay(state, response);
+-    } else {
+-      // AI chose to stay silent — release the speaking lock so next agent turn is heard
+-      state.isConvSpeaking = false;
+-    }
+-  } catch (err) {
+-    console.error(`[ConvMode] generateConversationResponse error:`, err);
+-    state.isConvSpeaking = false;
+-  }
+-}
+-
+ /**
+  * Exported injection bridge — called by /api/calls/speak and /api/calls/ai-respond.
+  * Works because API routes and the WS server share the same Node.js process.
+@@ -829,31 +841,28 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
+     }
+   }
+ 
+-  const aiTask = (call?.ai_task as string | null) || null;
+-  state.aiTask = aiTask;
++  const taskDetails = resolveTask(call?.ai_task_details, (call?.ai_task as string | null) ?? null);
++  state.aiTaskDetails = taskDetails;
++  state.aiTask = taskDetails ? taskDetails.request : null;
+ 
+   // ── Branch: AI task set → AI conversation mode ────────────────────────────
+-  if (aiTask) {
++  if (taskDetails) {
+     state.aiConversationMode = true;
+     state.aiConversationHistory = [];
+     state.isConvSpeaking = false;
+ 
+-    // Fire Twilio stream reconnect + OpenAI RT immediately (no further DB blocking)
+-    if (state.callSid) {
+-      const streamUrl = STREAM_URL();
+-      state.pendingRedirects++;
+-      twilioClient.calls(state.callSid).update({
+-        twiml: `<Response><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
+-      }).then(() => {
+-        console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${aiTask.substring(0, 40)}"`);
+-      }).catch((err) => {
+-        console.error(`[AI] Twilio update error callId=${state.callId}:`, err);
+-      });
+-    }
++    // No connect message and no TwiML redirect: the media stream is already
++    // bidirectional, so the AI can speak on it right away. (The old redirect tore
++    // the stream down just as the opening line was sent, so reps heard silence.)
++    console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${taskDetails.request.substring(0, 40)}"`);
+ 
+-    connectOpenAIRealtime(state).catch((err) =>
+-      console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err)
+-    );
++    // Deepgram is no longer needed — OpenAI Realtime listens from here on.
++    try { state.dgSocket?.close(); } catch {}
++
++    connectOpenAIRealtime(state).catch((err) => {
++      console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err);
++      handOffToTeam(state, 'AI voice could not start', 'The AI could not start, so the call was passed straight to the team.').catch(() => {});
++    });
+ 
+     // DB updates in background
+     (async () => {
+@@ -1001,9 +1010,8 @@ async function handleVoicemail(state: SessionState) {
+ 
+ async function endCallMaxDuration(state: SessionState) {
+   if (state.isTerminated) return;
+-  state.isTerminated = true;
+-  callSessions.delete(state.callId);
+-  state.ivrExecutor?.destroy();
++  // cleanup() closes sockets/timers and, on AI calls, writes the fallback summary.
++  cleanup(state);
+ 
+   console.log(`[MediaWS] Max duration reached callId=${state.callId}`);
+ 
+@@ -1021,64 +1029,47 @@ async function endCallMaxDuration(state: SessionState) {
+ 
+ // ─── OpenAI Realtime API ─────────────────────────────────────────────────────
+ 
+-/**
+- * Poll until the Twilio bidirectional stream is open, then trigger OpenAI to
+- * speak the opening greeting. This handles the race between the TwiML redirect
+- * (which briefly closes/reopens the stream) and the OpenAI RT connection.
+- */
+-function scheduleOpeningSpeech(state: SessionState, rtWs: WebSocket, attempt: number): void {
+-  if (state.isTerminated || rtWs.readyState !== WebSocket.OPEN) return;
+-  if (state.aiConversationHistory.length > 0) return; // already spoken
++const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-4o-realtime-preview';
++/** If the goodbye/handoff audio never reports finished, act anyway after this long. */
++const FINISH_FALLBACK_MS = 8_000;
+ 
++function sendToTwilio(state: SessionState, payload: Record<string, unknown>): void {
+   if (state.twilioWs?.readyState === WebSocket.OPEN) {
+-    console.log(`[OpenAI RT] Triggering opening speech callId=${state.callId}`);
+-    rtWs.send(JSON.stringify({
+-      type: 'response.create',
+-      response: {
+-        instructions: state.aiTask
+-          ? `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences. IMPORTANT: Always respond in English only, never any other language.`
+-          : `You just connected to a cruise line agent. Say exactly: "Hi, thank you for answering. Please hold for just a moment while I transfer you." Speak clearly and naturally. English only.`,
+-      },
+-    }));
+-  } else if (attempt < 20) {
+-    // Twilio stream not yet reconnected — retry every 200ms (up to 4s total)
+-    setTimeout(() => scheduleOpeningSpeech(state, rtWs, attempt + 1), 200);
+-  } else {
+-    console.warn(`[OpenAI RT] Gave up waiting for Twilio stream callId=${state.callId}`);
++    state.twilioWs.send(JSON.stringify({ streamSid: state.streamSid, ...payload }));
+   }
+ }
+ 
+ /**
+  * Connect to the OpenAI Realtime API and relay audio between Twilio and OpenAI.
+- * Replaces the Deepgram → GPT-4o → TTS pipeline with a single low-latency connection.
+- * First audio from OpenAI arrives within ~300ms of the agent speaking.
++ * The agent speaks for the agency, discloses it is an AI, and can end the call or
++ * hand it to the team through function calls.
+  */
+ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+   if (state.openaiRtWs) return; // already connected
++  const task = state.aiTaskDetails;
++  if (!task) throw new Error('No AI task for this call');
+ 
+   console.log(`[OpenAI RT] Connecting callId=${state.callId}`);
+ 
+-  const rtWs = new WebSocket(
+-    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+-    {
+-      headers: {
+-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+-        'OpenAI-Beta': 'realtime=v1',
+-      },
+-    }
+-  );
++  const rtWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${RT_MODEL}`, {
++    headers: {
++      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
++      'OpenAI-Beta': 'realtime=v1',
++    },
++    handshakeTimeout: 10_000,
++  });
+   state.openaiRtWs = rtWs;
++  let opened = false;
+ 
+   rtWs.on('open', () => {
++    opened = true;
+     console.log(`[OpenAI RT] Connected callId=${state.callId}`);
+ 
+-    // Configure session: g711_ulaw matches Twilio's mulaw format directly.
+-    // coral is OpenAI's most natural-sounding conversational voice.
+     rtWs.send(JSON.stringify({
+       type: 'session.update',
+       session: {
+         modalities: ['text', 'audio'],
+-        instructions: buildRtSystemPrompt(state.aiTask),
++        instructions: buildAgentInstructions(task),
+         voice: 'coral',
+         input_audio_format: 'g711_ulaw',
+         output_audio_format: 'g711_ulaw',
+@@ -1087,25 +1078,29 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+           type: 'server_vad',
+           threshold: 0.65,
+           prefix_padding_ms: 300,
+-          silence_duration_ms: 1500,
++          silence_duration_ms: 900,
+         },
++        tools: AGENT_TOOLS,
++        tool_choice: 'auto',
++        temperature: 0.7,
+       },
+     }));
+ 
+-    // If this is the opening (no history yet), speak the greeting once the
+-    // Twilio bidirectional stream is confirmed open. We poll briefly because
+-    // the TwiML redirect that restarts the stream may not have completed yet.
+-    if (state.aiConversationMode && state.aiConversationHistory.length === 0) {
+-      scheduleOpeningSpeech(state, rtWs, 0);
+-    } else if (state.aiConversationHistory.length > 0) {
+-      // Reconnected mid-conversation — replay history so OpenAI has context
++    if (state.aiConversationHistory.length === 0) {
++      // Opening line. The Twilio stream is already open and bidirectional.
++      rtWs.send(JSON.stringify({
++        type: 'response.create',
++        response: { instructions: buildOpeningInstruction(task) },
++      }));
++    } else {
++      // Reconnected mid-conversation — replay history so OpenAI has context.
+       for (const turn of state.aiConversationHistory) {
+         rtWs.send(JSON.stringify({
+           type: 'conversation.item.create',
+           item: {
+             type: 'message',
+             role: turn.speaker === 'us' ? 'assistant' : 'user',
+-            content: [{ type: 'input_text', text: turn.text }],
++            content: [{ type: turn.speaker === 'us' ? 'text' : 'input_text', text: turn.text }],
+           },
+         }));
+       }
+@@ -1117,17 +1112,34 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+       const event = JSON.parse(raw.toString());
+ 
+       switch (event.type) {
+-        case 'response.audio.delta':
+-          // Forward audio chunk to Twilio immediately (~300ms latency)
+-          if (state.twilioWs?.readyState === WebSocket.OPEN) {
+-            state.twilioWs.send(JSON.stringify({
+-              event: 'media',
+-              streamSid: state.streamSid,
+-              media: { payload: event.delta }, // already base64 g711_ulaw
+-            }));
++        case 'response.created':
++          state.rtResponseActive = true;
++          state.aiResponseBuffer = '';
++          break;
++
++        case 'response.done': {
++          state.rtResponseActive = false;
++          // Audio arrives faster than real time; Twilio echoes this mark once it has
++          // actually finished playing, which is when the AI is really done talking.
++          const mark = `ai-playback-${Date.now()}`;
++          state.aiPlaybackMark = mark;
++          sendToTwilio(state, { event: 'mark', mark: { name: mark } });
++          break;
++        }
++
++        case 'input_audio_buffer.speech_started':
++          // Barge-in: the rep started talking — stop our audio so we don't talk over them.
++          if (!state.aiFinishing && (state.rtResponseActive || state.aiPlaybackMark)) {
++            sendToTwilio(state, { event: 'clear' });
++            state.aiPlaybackMark = null;
++            if (state.rtResponseActive) rtWs.send(JSON.stringify({ type: 'response.cancel' }));
+           }
+           break;
+ 
++        case 'response.audio.delta':
++          sendToTwilio(state, { event: 'media', media: { payload: event.delta } }); // base64 g711_ulaw
++          break;
++
+         case 'response.audio_transcript.delta':
+           state.aiResponseBuffer += event.delta ?? '';
+           break;
+@@ -1155,6 +1167,38 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+               VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: agentText, speaker: 'agent', timestamp: Date.now() })})
+             `.catch(() => {});
+             console.log(`[OpenAI RT] Agent said: "${agentText.substring(0, 80)}" callId=${state.callId}`);
++
++            // Rep has gone and a survey / menu is playing — hang up now.
++            if (!state.aiFinishing && looksLikeSurveyOrIvr(agentText)) {
++              console.log(`[AI] Survey/IVR detected after rep — hanging up callId=${state.callId}`);
++              await finishWithFallbackSummary(state);
++            }
++          }
++          break;
++        }
++
++        case 'response.output_item.done': {
++          // Beta realtime: the tool name is only on the finished output item.
++          const item = event.item;
++          if (item?.type !== 'function_call') break;
++          let args: Record<string, string> = {};
++          try { args = JSON.parse(item.arguments ?? '{}'); } catch {}
++          // Acknowledge so the conversation state stays valid.
++          rtWs.send(JSON.stringify({
++            type: 'conversation.item.create',
++            item: { type: 'function_call_output', call_id: item.call_id, output: '{"ok":true}' },
++          }));
++          if (item.name === 'end_call') {
++            const outcome = (['resolved', 'partial', 'not_resolved', 'rep_refused_ai'].includes(args.outcome)
++              ? args.outcome : 'partial') as AiOutcome;
++            await scheduleFinish(state, async () => {
++              await saveAiOutcome(state, outcome, args.summary || 'No summary given.');
++              await hangUp(state);
++            });
++          } else if (item.name === 'transfer_to_team') {
++            await scheduleFinish(state, async () => {
++              await handOffToTeam(state, args.reason || 'AI asked for help', args.summary || '');
++            });
+           }
+           break;
+         }
+@@ -1171,26 +1215,154 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
+   rtWs.on('close', (code) => {
+     console.log(`[OpenAI RT] Closed code=${code} callId=${state.callId}`);
+     if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
++    // Lost the AI mid-call with the rep still on the line → get a person on.
++    if (!state.isTerminated && !state.aiFinishing) {
++      const reason = opened ? 'AI voice connection dropped' : 'AI voice could not start';
++      handOffToTeam(state, reason, 'The AI connection failed during the call.').catch(() => {});
++    }
+   });
+ 
+   rtWs.on('error', (err) => {
+     console.error(`[OpenAI RT] WS error callId=${state.callId}:`, err.message);
+-    if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
+   });
+ }
+ 
+-function buildRtSystemPrompt(aiTask: string | null): string {
+-  return `You are a polite customer calling a cruise line. Your goal: "${aiTask ?? 'Inquire about cruise options'}".
++/**
++ * Stop the AI from saying anything new, let its last sentence finish playing,
++ * then run the finish action (hang up or hand off). Twilio echoes a mark once
++ * all audio queued before it has played; a timer covers a lost mark.
++ */
++async function scheduleFinish(state: SessionState, action: () => Promise<void>): Promise<void> {
++  if (state.aiFinishing) return;
++  state.aiFinishing = true;
++  // Stop the AI from auto-replying if the rep talks during the goodbye.
++  try {
++    state.openaiRtWs?.send(JSON.stringify({ type: 'session.update', session: { turn_detection: null } }));
++  } catch {}
++  state.pendingFinishAction = action;
++  const mark = `ai-finish-${Date.now()}`;
++  state.pendingFinishMark = mark;
++  sendToTwilio(state, { event: 'mark', mark: { name: mark } });
++  state.finishFallbackTimer = setTimeout(() => runPendingFinish(state), FINISH_FALLBACK_MS);
++}
+ 
+-CRITICAL: You MUST always respond in English only. Never use Spanish, French, or any other language under any circumstances, regardless of what language you hear.
++function runPendingFinish(state: SessionState): void {
++  const action = state.pendingFinishAction;
++  state.pendingFinishAction = null;
++  state.pendingFinishMark = null;
++  if (state.finishFallbackTimer) {
++    clearTimeout(state.finishFallbackTimer);
++    state.finishFallbackTimer = null;
++  }
++  if (action) action().catch((err) => console.error(`[AI] Finish action error callId=${state.callId}:`, err));
++}
+ 
+-Rules:
+-- English only — every single response, no exceptions.
+-- Keep every response to 1-2 sentences. Be natural and conversational.
+-- If asked for your name, say "My name is Alex."
+-- If asked for account info or credentials you don't have (IATA number, booking ID, etc.), say "Let me check that with my travel agent, one moment."
+-- If the agent can't help or asks to speak with a manager, say "Of course, let me transfer you now."
+-- Never break character. You are the customer, the person on the other end is the cruise line agent.`;
++/** End right away (survey heard, etc.) and summarize from the transcript. */
++async function finishWithFallbackSummary(state: SessionState): Promise<void> {
++  if (state.aiFinishing) return;
++  state.aiFinishing = true;
++  try { state.openaiRtWs?.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
++  sendToTwilio(state, { event: 'clear' });
++  await hangUp(state);
++  if (state.aiTaskDetails) {
++    const { outcome, summary } = await summarizeTranscript(state.aiTaskDetails, state.aiConversationHistory);
++    await saveAiOutcome(state, outcome, summary);
++  }
++}
++
++async function hangUp(state: SessionState): Promise<void> {
++  console.log(`[AI] Hanging up callId=${state.callId}`);
++  try { state.openaiRtWs?.close(); } catch {}
++  if (state.callSid) {
++    await twilioClient.calls(state.callSid).update({ status: 'completed' }).catch((err) =>
++      console.error(`[AI] Hang-up error callId=${state.callId}:`, err?.message ?? err)
++    );
++  }
++}
++
++/** Save the outcome + summary on the call, log it, and text the team member. */
++async function saveAiOutcome(state: SessionState, outcome: AiOutcome, summary: string): Promise<void> {
++  if (state.aiOutcomeSaved) return;
++  state.aiOutcomeSaved = true;
++  console.log(`[AI] Outcome ${outcome} callId=${state.callId}: ${summary.substring(0, 100)}`);
++  await sql`
++    UPDATE calls SET ai_outcome = ${outcome}, ai_summary = ${summary}, updated_at = NOW()
++    WHERE id = ${state.callId}
++  `.catch((err) => console.error(`[AI] Save outcome error:`, err));
++  await sql`
++    INSERT INTO call_events (call_id, event_type, details)
++    VALUES (${state.callId}, 'ai_outcome', ${JSON.stringify({ outcome, summary })})
++  `.catch(() => {});
++
++  const phone = state.callConfig?.notification_phone as string | undefined;
++  if (phone && process.env.NOTIFICATION_SMS_ENABLED === 'true') {
++    const t = state.aiTaskDetails;
++    const ref = t?.bookingNumber ? ` ${t.bookingNumber}` : '';
++    const body = `CruisePro AI call${ref}: ${outcomeLabel(outcome)}. ${summary}`.slice(0, 1200);
++    await sendSMS(phone, body).catch((err) => console.error(`[AI] Summary SMS error:`, err?.message ?? err));
++  }
++}
++
++/**
++ * Hand the rep to a person: the rep hears a short hold line, the team member's
++ * phone rings in parallel with a whisper of why, and both join one conference.
++ */
++async function handOffToTeam(state: SessionState, reason: string, summary: string): Promise<void> {
++  state.aiFinishing = true;
++  try { state.openaiRtWs?.close(); } catch {}
++  if (state.isTerminated) {
++    // The rep already hung up — nobody to connect. Just record what happened.
++    await saveAiOutcome(state, 'handed_off', `${reason} (rep hung up before the handoff). ${summary}`.trim());
++    return;
++  }
++
++  const call = state.callConfig ?? {};
++  const transferNums = (call.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
++  const transferNumber = (call.transfer_number as string | null) ??
++    transferNums.find((n) => n.isDefault)?.phone ??
++    transferNums[0]?.phone ??
++    process.env.DEFAULT_TRANSFER_NUMBER ??
++    null;
++
++  if (!transferNumber || !state.callSid) {
++    console.error(`[AI] Handoff impossible (no transfer number) callId=${state.callId} — hanging up`);
++    await hangUp(state);
++    await saveAiOutcome(state, 'not_resolved', `Needed a person (${reason}) but no transfer number is set, so the call was ended. ${summary}`.trim());
++    return;
++  }
++
++  console.log(`[AI] Handing off to ${transferNumber} callId=${state.callId} reason="${reason}"`);
++  const room = `CruisePro-${state.callId}`;
++  const conf = `<Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">${room}</Conference></Dial>`;
++  const whisper = escapeXml(`Cruise line rep on the line from the AI. ${reason}. ${summary}`.slice(0, 400));
++
++  // No pendingRedirects++ here: the new TwiML has no <Stream>, so no new WS will
++  // arrive and the 'stop' that follows should run cleanup normally.
++  // Twilio legs go first so the rep isn't left in silence while we write to the DB.
++  const ok = await Promise.all([
++    twilioClient.calls(state.callSid).update({
++      twiml: `<Response><Say voice="Polly.Joanna">Thank you. Please hold one moment while I connect my colleague.</Say>${conf}</Response>`,
++    }),
++    twilioClient.calls.create({
++      to: transferNumber,
++      from: twilioPhone,
++      twiml: `<Response><Say voice="Polly.Joanna">${whisper}</Say>${conf}</Response>`,
++    }),
++  ]).then(() => true).catch(async (err) => {
++    const m = err instanceof Error ? err.message : String(err);
++    console.error(`[AI] Handoff error callId=${state.callId}:`, m);
++    await sql`UPDATE calls SET error_message = ${`AI handoff failed: ${m}`}, updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
++    return false;
++  });
++
++  if (ok) {
++    sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
++    sql`INSERT INTO call_events (call_id, event_type, details) VALUES (${state.callId}, 'ai_handoff', ${JSON.stringify({ transferNumber, reason })})`.catch(() => {});
++    await saveAiOutcome(state, 'handed_off', `${reason}. ${summary}`.trim());
++  } else {
++    await hangUp(state);
++    await saveAiOutcome(state, 'not_resolved', `Tried to hand the rep to the team (${reason}) but the transfer failed, so the call was ended. ${summary}`.trim());
++  }
+ }
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+@@ -1223,6 +1395,17 @@ function cleanup(state: SessionState) {
+   saveLiveTranscript(state.callId).catch((err) =>
+     console.error(`[MediaWS] saveLiveTranscript error:`, err?.message ?? err)
+   );
++
++  // AI call ended without end_call / handoff (rep hung up, line dropped):
++  // still write an outcome + summary and text it, from the transcript.
++  // (Finish paths already in progress save their own outcome; a pending
++  // finish timer is left running on purpose so that action still completes.)
++  if (state.aiConversationMode && !state.aiFinishing && state.aiTaskDetails) {
++    state.aiFinishing = true;
++    summarizeTranscript(state.aiTaskDetails, state.aiConversationHistory)
++      .then(({ outcome, summary }) => saveAiOutcome(state, outcome, summary))
++      .catch((err) => console.error(`[AI] Fallback summary error:`, err));
++  }
+ }
+ 
+ /**
+-- 
+2.43.0

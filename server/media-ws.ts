@@ -5,7 +5,20 @@ import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigato
 import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
 import { notifyAgentDetected } from '@/lib/notifications';
 import { generateTTSMulaw, streamTTSMulaw } from '@/lib/openai-tts';
-import { generateConversationResponse, ConversationTurn as ConvTurn } from './conversation-engine';
+import { ConversationTurn as ConvTurn } from './conversation-engine';
+import {
+  AiOutcome,
+  AiTaskDetails,
+  AGENT_TOOLS,
+  buildAgentInstructions,
+  buildOpeningInstruction,
+  looksLikeSurveyOrIvr,
+  outcomeLabel,
+  resolveTask,
+  summarizeTranscript,
+} from './ai-call-agent';
+import { sendSMS } from '@/lib/twilio';
+import { AiEngine, ClaudeVoiceSession, resolveAiEngine } from './claude-voice';
 
 import { IVRExecutor, ExecutorAction } from './ivr-executor';
 import { IVRStep } from '@/lib/ivr-engine';
@@ -83,6 +96,24 @@ interface SessionState {
   openaiRtWs: WebSocket | null;
   /** Accumulate AI response text across delta events for DB storage. */
   aiResponseBuffer: string;
+  /** Structured task form for the AI agent (falls back to aiTask free text). */
+  aiTaskDetails: AiTaskDetails | null;
+  /** Set once end_call / transfer_to_team / survey-cutoff has started — the AI stops talking. */
+  aiFinishing: boolean;
+  /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
+  aiOutcomeSaved: boolean;
+  /** Twilio mark name that, when played, triggers the pending finish action. */
+  pendingFinishMark: string | null;
+  pendingFinishAction: (() => Promise<void>) | null;
+  finishFallbackTimer: ReturnType<typeof setTimeout> | null;
+  /** Which brain runs AI calls: Claude (Deepgram → Claude → TTS) or OpenAI Realtime. */
+  aiEngine: AiEngine;
+  /** The Claude voice pipeline for this call (aiEngine === 'claude'). */
+  claude: ClaudeVoiceSession | null;
+  /** True while OpenAI is generating a response (used for barge-in). */
+  rtResponseActive: boolean;
+  /** Mark sent after the AI's latest response; non-null while that audio is still playing. */
+  aiPlaybackMark: string | null;
 }
 
 const BASE_URL = () =>
@@ -157,7 +188,9 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
               state.reconnectTimer = null;
             }
 
-            if (state.aiConversationMode) {
+            if (state.aiConversationMode && state.aiEngine === 'claude') {
+              // Claude pipeline keeps running; it sends audio through state.twilioWs, now updated.
+            } else if (state.aiConversationMode) {
               // AI conversation mode — use OpenAI Realtime, skip Deepgram
               if (!state.openaiRtWs || state.openaiRtWs.readyState === WebSocket.CLOSED || state.openaiRtWs.readyState === WebSocket.CLOSING) {
                 connectOpenAIRealtime(state).catch((err) =>
@@ -206,6 +239,16 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             aiTask: null,
             openaiRtWs: null,
             aiResponseBuffer: '',
+            aiTaskDetails: null,
+            aiFinishing: false,
+            aiOutcomeSaved: false,
+            pendingFinishMark: null,
+            pendingFinishAction: null,
+            finishFallbackTimer: null,
+            aiEngine: 'openai',
+            claude: null,
+            rtResponseActive: false,
+            aiPlaybackMark: null,
           };
 
           callSessions.set(callId, state!);
@@ -219,7 +262,10 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
 
         case 'media': {
           if (!state) return;
-          if (state.aiConversationMode && state.openaiRtWs?.readyState === WebSocket.OPEN) {
+          if (state.aiConversationMode && state.claude) {
+            // Claude engine — the voice pipeline owns its own Deepgram connection.
+            state.claude.pushAudio(msg.media.payload);
+          } else if (state.aiConversationMode && state.openaiRtWs?.readyState === WebSocket.OPEN) {
             // OpenAI Realtime is connected — send audio directly (g711_ulaw passthrough, no conversion).
             state.openaiRtWs.send(JSON.stringify({
               type: 'input_audio_buffer.append',
@@ -238,6 +284,13 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
           if (state && msg.mark?.name?.startsWith('conv-tts-done-')) {
             // Give 300ms buffer after playback before listening for agent reply
             setTimeout(() => { if (state) state.isConvSpeaking = false; }, 300);
+          }
+          if (state && state.aiPlaybackMark && msg.mark?.name === state.aiPlaybackMark) {
+            state.aiPlaybackMark = null;
+          }
+          if (state && state.pendingFinishMark && msg.mark?.name === state.pendingFinishMark) {
+            // The AI's last sentence has finished playing — now hang up / hand off.
+            runPendingFinish(state);
           }
           break;
         }
@@ -318,7 +371,8 @@ async function setupSession(state: SessionState, _ws: WebSocket): Promise<void> 
     const rows = await sql`
       SELECT c.*, ic.steps,
              u.notification_phone, u.connect_message, u.transfer_numbers,
-             (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled,
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine
       FROM calls c
       JOIN users u ON u.id = c.user_id
       LEFT JOIN ivr_configs ic ON ic.id = c.ivr_config_id
@@ -432,7 +486,8 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
 
     dgSocket.on('close', (code: number, reason: Buffer) => {
       console.log(`[Deepgram] Closed callId=${state.callId} code=${code} reason=${reason?.toString()}`);
-      if (!state.isTerminated && attempt < DG_RETRY_DELAYS.length) {
+      // In AI conversation mode OpenAI Realtime does the listening — don't reconnect Deepgram.
+      if (!state.isTerminated && !state.aiConversationMode && attempt < DG_RETRY_DELAYS.length) {
         const delay = DG_RETRY_DELAYS[attempt] ?? 4000;
         console.log(`[Deepgram] Retrying in ${delay}ms (attempt ${attempt + 1})`);
         setTimeout(() => connectDeepgram(state, attempt + 1), delay);
@@ -453,11 +508,10 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
 
   // Route to conversation processor when in AI conversation mode
   if (state.aiConversationMode) {
-    if (state.isConvSpeaking) {
-      console.log(`[ConvMode] Suppressed transcript (AI speaking): "${transcript.substring(0, 60)}"`);
-    } else {
-      await processConversationSpeech(state, transcript);
-    }
+    // OpenAI Realtime handles listening + replying. Deepgram transcripts that arrive
+    // during the switchover must not trigger the legacy Deepgram→GPT→TTS pipeline:
+    // it double-replied and its prompt posed as the guest. If Realtime fails, the
+    // call is handed to the team instead (see connectOpenAIRealtime).
     return;
   }
 
@@ -699,35 +753,6 @@ async function dispatchConversationSay(state: SessionState, text: string): Promi
   }
 }
 
-/** Called when the cruise agent speaks during AI conversation mode. */
-async function processConversationSpeech(state: SessionState, transcript: string): Promise<void> {
-  // Set immediately (before any await) to prevent concurrent calls from both
-  // generating a response when two transcripts arrive at the same time.
-  state.isConvSpeaking = true;
-  state.lastTranscriptAt = Date.now();
-  console.log(`[ConvMode] Agent said: "${transcript}" callId=${state.callId}`);
-
-  await sql`
-    INSERT INTO call_events (call_id, event_type, details)
-    VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: transcript, speaker: 'agent', timestamp: Date.now() })})
-  `.catch(() => {});
-
-  state.aiConversationHistory.push({ speaker: 'agent', text: transcript, timestamp: Date.now() });
-
-  try {
-    const response = await generateConversationResponse(state.aiConversationHistory, state.callId, state.aiTask);
-    if (response) {
-      await dispatchConversationSay(state, response);
-    } else {
-      // AI chose to stay silent — release the speaking lock so next agent turn is heard
-      state.isConvSpeaking = false;
-    }
-  } catch (err) {
-    console.error(`[ConvMode] generateConversationResponse error:`, err);
-    state.isConvSpeaking = false;
-  }
-}
-
 /**
  * Exported injection bridge — called by /api/calls/speak and /api/calls/ai-respond.
  * Works because API routes and the WS server share the same Node.js process.
@@ -754,6 +779,7 @@ export function injectRealtimeInstruction(callId: string, instruction: string): 
   if (!state) { console.warn(`[Speak] callId=${callId} not in callSessions (map size=${callSessions.size})`); return false; }
   if (state.isTerminated) { console.warn(`[Speak] callId=${callId} isTerminated`); return false; }
   if (!state.aiConversationMode) { console.warn(`[Speak] callId=${callId} not in aiConversationMode`); return false; }
+  if (state.claude) return state.claude.injectInstruction(instruction);
   if (!state.openaiRtWs || state.openaiRtWs.readyState !== WebSocket.OPEN) {
     console.warn(`[Speak] callId=${callId} OpenAI RT not ready (readyState=${state.openaiRtWs?.readyState ?? 'null'})`);
     return false;
@@ -816,7 +842,8 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     try {
       const rows = await sql`
         SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers,
-               (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled
+               (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled,
+               (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine
         FROM calls c
         JOIN users u ON u.id = c.user_id
         WHERE c.id = ${state.callId}
@@ -829,31 +856,34 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     }
   }
 
-  const aiTask = (call?.ai_task as string | null) || null;
-  state.aiTask = aiTask;
+  const taskDetails = resolveTask(call?.ai_task_details, (call?.ai_task as string | null) ?? null);
+  state.aiTaskDetails = taskDetails;
+  state.aiTask = taskDetails ? taskDetails.request : null;
 
   // ── Branch: AI task set → AI conversation mode ────────────────────────────
-  if (aiTask) {
+  if (taskDetails) {
     state.aiConversationMode = true;
     state.aiConversationHistory = [];
     state.isConvSpeaking = false;
 
-    // Fire Twilio stream reconnect + OpenAI RT immediately (no further DB blocking)
-    if (state.callSid) {
-      const streamUrl = STREAM_URL();
-      state.pendingRedirects++;
-      twilioClient.calls(state.callSid).update({
-        twiml: `<Response><Connect><Stream url="${streamUrl}" bidirectional="true"><Parameter name="callId" value="${state.callId}"/></Stream></Connect></Response>`,
-      }).then(() => {
-        console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${aiTask.substring(0, 40)}"`);
-      }).catch((err) => {
-        console.error(`[AI] Twilio update error callId=${state.callId}:`, err);
+    // No connect message and no TwiML redirect: the media stream is already
+    // bidirectional, so the AI can speak on it right away. (The old redirect tore
+    // the stream down just as the opening line was sent, so reps heard silence.)
+    console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${taskDetails.request.substring(0, 40)}"`);
+
+    // Deepgram is no longer needed — OpenAI Realtime listens from here on.
+    try { state.dgSocket?.close(); } catch {}
+
+    state.aiEngine = resolveAiEngine(call?.ai_engine);
+    console.log(`[AI] Engine=${state.aiEngine} callId=${state.callId}`);
+    if (state.aiEngine === 'claude') {
+      startClaudeVoice(state);
+    } else {
+      connectOpenAIRealtime(state).catch((err) => {
+        console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err);
+        handOffToTeam(state, 'AI voice could not start', 'The AI could not start, so the call was passed straight to the team.').catch(() => {});
       });
     }
-
-    connectOpenAIRealtime(state).catch((err) =>
-      console.error(`[OpenAI RT] Initial connect error callId=${state.callId}:`, err)
-    );
 
     // DB updates in background
     (async () => {
@@ -1001,9 +1031,8 @@ async function handleVoicemail(state: SessionState) {
 
 async function endCallMaxDuration(state: SessionState) {
   if (state.isTerminated) return;
-  state.isTerminated = true;
-  callSessions.delete(state.callId);
-  state.ivrExecutor?.destroy();
+  // cleanup() closes sockets/timers and, on AI calls, writes the fallback summary.
+  cleanup(state);
 
   console.log(`[MediaWS] Max duration reached callId=${state.callId}`);
 
@@ -1019,66 +1048,98 @@ async function endCallMaxDuration(state: SessionState) {
   }
 }
 
+// ─── Claude voice engine ─────────────────────────────────────────────────────
+
+/** Wire the Claude pipeline (server/claude-voice.ts) into this call. */
+function startClaudeVoice(state: SessionState): void {
+  const task = state.aiTaskDetails;
+  if (!task || state.claude) return;
+
+  state.claude = new ClaudeVoiceSession({
+    callId: state.callId,
+    task,
+    isDone: () => state.isTerminated || state.aiFinishing,
+    sendAudio: (mulaw) => sendToTwilio(state, { event: 'media', media: { payload: mulaw.toString('base64') } }),
+    clearAudio: () => {
+      sendToTwilio(state, { event: 'clear' });
+      state.aiPlaybackMark = null;
+    },
+    recordAiSay: (text) => {
+      state.aiConversationHistory.push({ speaker: 'us', text, timestamp: Date.now() });
+      sql`
+        INSERT INTO call_events (call_id, event_type, details)
+        VALUES (${state.callId}, 'conversation_ai_say', ${JSON.stringify({ text, timestamp: Date.now() })})
+      `.catch(() => {});
+    },
+    recordRepSay: (text) => {
+      state.aiConversationHistory.push({ speaker: 'agent', text, timestamp: Date.now() });
+      sql`
+        INSERT INTO call_events (call_id, event_type, details)
+        VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text, speaker: 'agent', timestamp: Date.now() })})
+      `.catch(() => {});
+    },
+    endCall: (outcome, summary) =>
+      scheduleFinish(state, async () => {
+        await saveAiOutcome(state, outcome, summary);
+        await hangUp(state);
+      }),
+    transfer: (reason, summary) =>
+      scheduleFinish(state, async () => {
+        await handOffToTeam(state, reason, summary);
+      }),
+    surveyHeard: () => finishWithFallbackSummary(state),
+    fail: (reason) => {
+      if (state.isTerminated || state.aiFinishing) return;
+      console.error(`[AI] Claude engine failed (${reason}) callId=${state.callId}`);
+      handOffToTeam(state, reason, 'The AI failed during the call, so it was passed to the team.').catch(() => {});
+    },
+  });
+  state.claude.start();
+}
+
 // ─── OpenAI Realtime API ─────────────────────────────────────────────────────
 
-/**
- * Poll until the Twilio bidirectional stream is open, then trigger OpenAI to
- * speak the opening greeting. This handles the race between the TwiML redirect
- * (which briefly closes/reopens the stream) and the OpenAI RT connection.
- */
-function scheduleOpeningSpeech(state: SessionState, rtWs: WebSocket, attempt: number): void {
-  if (state.isTerminated || rtWs.readyState !== WebSocket.OPEN) return;
-  if (state.aiConversationHistory.length > 0) return; // already spoken
+const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-4o-realtime-preview';
+/** If the goodbye/handoff audio never reports finished, act anyway after this long. */
+const FINISH_FALLBACK_MS = 8_000;
 
+function sendToTwilio(state: SessionState, payload: Record<string, unknown>): void {
   if (state.twilioWs?.readyState === WebSocket.OPEN) {
-    console.log(`[OpenAI RT] Triggering opening speech callId=${state.callId}`);
-    rtWs.send(JSON.stringify({
-      type: 'response.create',
-      response: {
-        instructions: state.aiTask
-          ? `You just connected to a cruise line agent. Greet them warmly and immediately state: ${state.aiTask}. Keep it to 1-2 natural sentences. IMPORTANT: Always respond in English only, never any other language.`
-          : `You just connected to a cruise line agent. Say exactly: "Hi, thank you for answering. Please hold for just a moment while I transfer you." Speak clearly and naturally. English only.`,
-      },
-    }));
-  } else if (attempt < 20) {
-    // Twilio stream not yet reconnected — retry every 200ms (up to 4s total)
-    setTimeout(() => scheduleOpeningSpeech(state, rtWs, attempt + 1), 200);
-  } else {
-    console.warn(`[OpenAI RT] Gave up waiting for Twilio stream callId=${state.callId}`);
+    state.twilioWs.send(JSON.stringify({ streamSid: state.streamSid, ...payload }));
   }
 }
 
 /**
  * Connect to the OpenAI Realtime API and relay audio between Twilio and OpenAI.
- * Replaces the Deepgram → GPT-4o → TTS pipeline with a single low-latency connection.
- * First audio from OpenAI arrives within ~300ms of the agent speaking.
+ * The agent speaks for the agency, discloses it is an AI, and can end the call or
+ * hand it to the team through function calls.
  */
 async function connectOpenAIRealtime(state: SessionState): Promise<void> {
   if (state.openaiRtWs) return; // already connected
+  const task = state.aiTaskDetails;
+  if (!task) throw new Error('No AI task for this call');
 
   console.log(`[OpenAI RT] Connecting callId=${state.callId}`);
 
-  const rtWs = new WebSocket(
-    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1',
-      },
-    }
-  );
+  const rtWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${RT_MODEL}`, {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'OpenAI-Beta': 'realtime=v1',
+    },
+    handshakeTimeout: 10_000,
+  });
   state.openaiRtWs = rtWs;
+  let opened = false;
 
   rtWs.on('open', () => {
+    opened = true;
     console.log(`[OpenAI RT] Connected callId=${state.callId}`);
 
-    // Configure session: g711_ulaw matches Twilio's mulaw format directly.
-    // coral is OpenAI's most natural-sounding conversational voice.
     rtWs.send(JSON.stringify({
       type: 'session.update',
       session: {
         modalities: ['text', 'audio'],
-        instructions: buildRtSystemPrompt(state.aiTask),
+        instructions: buildAgentInstructions(task),
         voice: 'coral',
         input_audio_format: 'g711_ulaw',
         output_audio_format: 'g711_ulaw',
@@ -1087,25 +1148,29 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
           type: 'server_vad',
           threshold: 0.65,
           prefix_padding_ms: 300,
-          silence_duration_ms: 1500,
+          silence_duration_ms: 900,
         },
+        tools: AGENT_TOOLS,
+        tool_choice: 'auto',
+        temperature: 0.7,
       },
     }));
 
-    // If this is the opening (no history yet), speak the greeting once the
-    // Twilio bidirectional stream is confirmed open. We poll briefly because
-    // the TwiML redirect that restarts the stream may not have completed yet.
-    if (state.aiConversationMode && state.aiConversationHistory.length === 0) {
-      scheduleOpeningSpeech(state, rtWs, 0);
-    } else if (state.aiConversationHistory.length > 0) {
-      // Reconnected mid-conversation — replay history so OpenAI has context
+    if (state.aiConversationHistory.length === 0) {
+      // Opening line. The Twilio stream is already open and bidirectional.
+      rtWs.send(JSON.stringify({
+        type: 'response.create',
+        response: { instructions: buildOpeningInstruction(task) },
+      }));
+    } else {
+      // Reconnected mid-conversation — replay history so OpenAI has context.
       for (const turn of state.aiConversationHistory) {
         rtWs.send(JSON.stringify({
           type: 'conversation.item.create',
           item: {
             type: 'message',
             role: turn.speaker === 'us' ? 'assistant' : 'user',
-            content: [{ type: 'input_text', text: turn.text }],
+            content: [{ type: turn.speaker === 'us' ? 'text' : 'input_text', text: turn.text }],
           },
         }));
       }
@@ -1117,15 +1182,32 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
       const event = JSON.parse(raw.toString());
 
       switch (event.type) {
-        case 'response.audio.delta':
-          // Forward audio chunk to Twilio immediately (~300ms latency)
-          if (state.twilioWs?.readyState === WebSocket.OPEN) {
-            state.twilioWs.send(JSON.stringify({
-              event: 'media',
-              streamSid: state.streamSid,
-              media: { payload: event.delta }, // already base64 g711_ulaw
-            }));
+        case 'response.created':
+          state.rtResponseActive = true;
+          state.aiResponseBuffer = '';
+          break;
+
+        case 'response.done': {
+          state.rtResponseActive = false;
+          // Audio arrives faster than real time; Twilio echoes this mark once it has
+          // actually finished playing, which is when the AI is really done talking.
+          const mark = `ai-playback-${Date.now()}`;
+          state.aiPlaybackMark = mark;
+          sendToTwilio(state, { event: 'mark', mark: { name: mark } });
+          break;
+        }
+
+        case 'input_audio_buffer.speech_started':
+          // Barge-in: the rep started talking — stop our audio so we don't talk over them.
+          if (!state.aiFinishing && (state.rtResponseActive || state.aiPlaybackMark)) {
+            sendToTwilio(state, { event: 'clear' });
+            state.aiPlaybackMark = null;
+            if (state.rtResponseActive) rtWs.send(JSON.stringify({ type: 'response.cancel' }));
           }
+          break;
+
+        case 'response.audio.delta':
+          sendToTwilio(state, { event: 'media', media: { payload: event.delta } }); // base64 g711_ulaw
           break;
 
         case 'response.audio_transcript.delta':
@@ -1155,6 +1237,38 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
               VALUES (${state.callId}, 'conversation_transcript', ${JSON.stringify({ text: agentText, speaker: 'agent', timestamp: Date.now() })})
             `.catch(() => {});
             console.log(`[OpenAI RT] Agent said: "${agentText.substring(0, 80)}" callId=${state.callId}`);
+
+            // Rep has gone and a survey / menu is playing — hang up now.
+            if (!state.aiFinishing && looksLikeSurveyOrIvr(agentText)) {
+              console.log(`[AI] Survey/IVR detected after rep — hanging up callId=${state.callId}`);
+              await finishWithFallbackSummary(state);
+            }
+          }
+          break;
+        }
+
+        case 'response.output_item.done': {
+          // Beta realtime: the tool name is only on the finished output item.
+          const item = event.item;
+          if (item?.type !== 'function_call') break;
+          let args: Record<string, string> = {};
+          try { args = JSON.parse(item.arguments ?? '{}'); } catch {}
+          // Acknowledge so the conversation state stays valid.
+          rtWs.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: { type: 'function_call_output', call_id: item.call_id, output: '{"ok":true}' },
+          }));
+          if (item.name === 'end_call') {
+            const outcome = (['resolved', 'partial', 'not_resolved', 'rep_refused_ai'].includes(args.outcome)
+              ? args.outcome : 'partial') as AiOutcome;
+            await scheduleFinish(state, async () => {
+              await saveAiOutcome(state, outcome, args.summary || 'No summary given.');
+              await hangUp(state);
+            });
+          } else if (item.name === 'transfer_to_team') {
+            await scheduleFinish(state, async () => {
+              await handOffToTeam(state, args.reason || 'AI asked for help', args.summary || '');
+            });
           }
           break;
         }
@@ -1171,26 +1285,157 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
   rtWs.on('close', (code) => {
     console.log(`[OpenAI RT] Closed code=${code} callId=${state.callId}`);
     if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
+    // Lost the AI mid-call with the rep still on the line → get a person on.
+    if (!state.isTerminated && !state.aiFinishing) {
+      const reason = opened ? 'AI voice connection dropped' : 'AI voice could not start';
+      handOffToTeam(state, reason, 'The AI connection failed during the call.').catch(() => {});
+    }
   });
 
   rtWs.on('error', (err) => {
     console.error(`[OpenAI RT] WS error callId=${state.callId}:`, err.message);
-    if (state.openaiRtWs === rtWs) state.openaiRtWs = null;
   });
 }
 
-function buildRtSystemPrompt(aiTask: string | null): string {
-  return `You are a polite customer calling a cruise line. Your goal: "${aiTask ?? 'Inquire about cruise options'}".
+/**
+ * Stop the AI from saying anything new, let its last sentence finish playing,
+ * then run the finish action (hang up or hand off). Twilio echoes a mark once
+ * all audio queued before it has played; a timer covers a lost mark.
+ */
+async function scheduleFinish(state: SessionState, action: () => Promise<void>): Promise<void> {
+  if (state.aiFinishing) return;
+  state.aiFinishing = true;
+  // Stop the AI from auto-replying if the rep talks during the goodbye.
+  try {
+    state.openaiRtWs?.send(JSON.stringify({ type: 'session.update', session: { turn_detection: null } }));
+  } catch {}
+  state.pendingFinishAction = action;
+  const mark = `ai-finish-${Date.now()}`;
+  state.pendingFinishMark = mark;
+  sendToTwilio(state, { event: 'mark', mark: { name: mark } });
+  state.finishFallbackTimer = setTimeout(() => runPendingFinish(state), FINISH_FALLBACK_MS);
+}
 
-CRITICAL: You MUST always respond in English only. Never use Spanish, French, or any other language under any circumstances, regardless of what language you hear.
+function runPendingFinish(state: SessionState): void {
+  const action = state.pendingFinishAction;
+  state.pendingFinishAction = null;
+  state.pendingFinishMark = null;
+  if (state.finishFallbackTimer) {
+    clearTimeout(state.finishFallbackTimer);
+    state.finishFallbackTimer = null;
+  }
+  if (action) action().catch((err) => console.error(`[AI] Finish action error callId=${state.callId}:`, err));
+}
 
-Rules:
-- English only — every single response, no exceptions.
-- Keep every response to 1-2 sentences. Be natural and conversational.
-- If asked for your name, say "My name is Alex."
-- If asked for account info or credentials you don't have (IATA number, booking ID, etc.), say "Let me check that with my travel agent, one moment."
-- If the agent can't help or asks to speak with a manager, say "Of course, let me transfer you now."
-- Never break character. You are the customer, the person on the other end is the cruise line agent.`;
+/** End right away (survey heard, etc.) and summarize from the transcript. */
+async function finishWithFallbackSummary(state: SessionState): Promise<void> {
+  if (state.aiFinishing) return;
+  state.aiFinishing = true;
+  try { state.openaiRtWs?.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+  state.claude?.stop();
+  sendToTwilio(state, { event: 'clear' });
+  await hangUp(state);
+  if (state.aiTaskDetails) {
+    const { outcome, summary } = await summarizeTranscript(state.aiTaskDetails, state.aiConversationHistory);
+    await saveAiOutcome(state, outcome, summary);
+  }
+}
+
+async function hangUp(state: SessionState): Promise<void> {
+  console.log(`[AI] Hanging up callId=${state.callId}`);
+  try { state.openaiRtWs?.close(); } catch {}
+  state.claude?.stop();
+  if (state.callSid) {
+    await twilioClient.calls(state.callSid).update({ status: 'completed' }).catch((err) =>
+      console.error(`[AI] Hang-up error callId=${state.callId}:`, err?.message ?? err)
+    );
+  }
+}
+
+/** Save the outcome + summary on the call, log it, and text the team member. */
+async function saveAiOutcome(state: SessionState, outcome: AiOutcome, summary: string): Promise<void> {
+  if (state.aiOutcomeSaved) return;
+  state.aiOutcomeSaved = true;
+  console.log(`[AI] Outcome ${outcome} callId=${state.callId}: ${summary.substring(0, 100)}`);
+  await sql`
+    UPDATE calls SET ai_outcome = ${outcome}, ai_summary = ${summary}, updated_at = NOW()
+    WHERE id = ${state.callId}
+  `.catch((err) => console.error(`[AI] Save outcome error:`, err));
+  await sql`
+    INSERT INTO call_events (call_id, event_type, details)
+    VALUES (${state.callId}, 'ai_outcome', ${JSON.stringify({ outcome, summary })})
+  `.catch(() => {});
+
+  const phone = state.callConfig?.notification_phone as string | undefined;
+  if (phone && process.env.NOTIFICATION_SMS_ENABLED === 'true') {
+    const t = state.aiTaskDetails;
+    const ref = t?.bookingNumber ? ` ${t.bookingNumber}` : '';
+    const body = `CruisePro AI call${ref}: ${outcomeLabel(outcome)}. ${summary}`.slice(0, 1200);
+    await sendSMS(phone, body).catch((err) => console.error(`[AI] Summary SMS error:`, err?.message ?? err));
+  }
+}
+
+/**
+ * Hand the rep to a person: the rep hears a short hold line, the team member's
+ * phone rings in parallel with a whisper of why, and both join one conference.
+ */
+async function handOffToTeam(state: SessionState, reason: string, summary: string): Promise<void> {
+  state.aiFinishing = true;
+  try { state.openaiRtWs?.close(); } catch {}
+  state.claude?.stop();
+  if (state.isTerminated) {
+    // The rep already hung up — nobody to connect. Just record what happened.
+    await saveAiOutcome(state, 'handed_off', `${reason} (rep hung up before the handoff). ${summary}`.trim());
+    return;
+  }
+
+  const call = state.callConfig ?? {};
+  const transferNums = (call.transfer_numbers ?? []) as Array<{ phone: string; isDefault: boolean }>;
+  const transferNumber = (call.transfer_number as string | null) ??
+    transferNums.find((n) => n.isDefault)?.phone ??
+    transferNums[0]?.phone ??
+    process.env.DEFAULT_TRANSFER_NUMBER ??
+    null;
+
+  if (!transferNumber || !state.callSid) {
+    console.error(`[AI] Handoff impossible (no transfer number) callId=${state.callId} — hanging up`);
+    await hangUp(state);
+    await saveAiOutcome(state, 'not_resolved', `Needed a person (${reason}) but no transfer number is set, so the call was ended. ${summary}`.trim());
+    return;
+  }
+
+  console.log(`[AI] Handing off to ${transferNumber} callId=${state.callId} reason="${reason}"`);
+  const room = `CruisePro-${state.callId}`;
+  const conf = `<Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">${room}</Conference></Dial>`;
+  const whisper = escapeXml(`Cruise line rep on the line from the AI. ${reason}. ${summary}`.slice(0, 400));
+
+  // No pendingRedirects++ here: the new TwiML has no <Stream>, so no new WS will
+  // arrive and the 'stop' that follows should run cleanup normally.
+  // Twilio legs go first so the rep isn't left in silence while we write to the DB.
+  const ok = await Promise.all([
+    twilioClient.calls(state.callSid).update({
+      twiml: `<Response><Say voice="Polly.Joanna">Thank you. Please hold one moment while I connect my colleague.</Say>${conf}</Response>`,
+    }),
+    twilioClient.calls.create({
+      to: transferNumber,
+      from: twilioPhone,
+      twiml: `<Response><Say voice="Polly.Joanna">${whisper}</Say>${conf}</Response>`,
+    }),
+  ]).then(() => true).catch(async (err) => {
+    const m = err instanceof Error ? err.message : String(err);
+    console.error(`[AI] Handoff error callId=${state.callId}:`, m);
+    await sql`UPDATE calls SET error_message = ${`AI handoff failed: ${m}`}, updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
+    return false;
+  });
+
+  if (ok) {
+    sql`UPDATE calls SET status = 'connected', updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
+    sql`INSERT INTO call_events (call_id, event_type, details) VALUES (${state.callId}, 'ai_handoff', ${JSON.stringify({ transferNumber, reason })})`.catch(() => {});
+    await saveAiOutcome(state, 'handed_off', `${reason}. ${summary}`.trim());
+  } else {
+    await hangUp(state);
+    await saveAiOutcome(state, 'not_resolved', `Tried to hand the rep to the team (${reason}) but the transfer failed, so the call was ended. ${summary}`.trim());
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1204,6 +1449,7 @@ function cleanup(state: SessionState) {
   // Close OpenAI Realtime connection if active
   try { state.openaiRtWs?.close(); } catch {}
   state.openaiRtWs = null;
+  state.claude?.stop();
 
   if (state.maxDurationTimer) {
     clearTimeout(state.maxDurationTimer);
@@ -1223,6 +1469,17 @@ function cleanup(state: SessionState) {
   saveLiveTranscript(state.callId).catch((err) =>
     console.error(`[MediaWS] saveLiveTranscript error:`, err?.message ?? err)
   );
+
+  // AI call ended without end_call / handoff (rep hung up, line dropped):
+  // still write an outcome + summary and text it, from the transcript.
+  // (Finish paths already in progress save their own outcome; a pending
+  // finish timer is left running on purpose so that action still completes.)
+  if (state.aiConversationMode && !state.aiFinishing && state.aiTaskDetails) {
+    state.aiFinishing = true;
+    summarizeTranscript(state.aiTaskDetails, state.aiConversationHistory)
+      .then(({ outcome, summary }) => saveAiOutcome(state, outcome, summary))
+      .catch((err) => console.error(`[AI] Fallback summary error:`, err));
+  }
 }
 
 /**

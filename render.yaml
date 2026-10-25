@@ -22,4 +22,5 @@ services:
       # - key: TWILIO_PHONE_NUMBER
       # - key: DEEPGRAM_API_KEY
       # - key: OPENAI_API_KEY
+      # - key: ANTHROPIC_API_KEY    (Claude engine for AI task calls)
       # - key: DEFAULT_TRANSFER_NUMBER

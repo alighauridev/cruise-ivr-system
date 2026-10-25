@@ -46,13 +46,13 @@ export default function UserSwitcher({ realUserId, actingAsId }: Props) {
   };
 
   return (
-    <div className="mb-3">
-      <label className="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Act as user</label>
+    <div className="mb-3 border-b border-line pb-3">
+      <label className="eyebrow mb-1.5 block">Act as user</label>
       <select
         value={actingAsId ?? realUserId}
         disabled={busy}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+        className="input input-sm text-xs"
       >
         {users.map((u) => (
           <option key={u.id} value={u.id}>

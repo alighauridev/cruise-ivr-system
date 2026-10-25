@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sql from '@/lib/db';
 import { getAuthContext } from '@/lib/admin';
 import { twilioClient, twilioPhone } from '@/lib/twilio';
+import { AiTaskDetails, REQUEST_TYPES, taskToText } from '@/server/ai-call-agent';
 
 export async function POST(req: NextRequest) {
   const ctx = await getAuthContext();
@@ -9,7 +10,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { leadId, transferNumber, ivrConfigId, aiTask } = await req.json();
+  const { leadId, transferNumber, ivrConfigId, aiTask, aiTaskDetails } = await req.json();
+
+  // Structured AI task form (preferred) — trim strings, drop unknown keys.
+  let taskDetails: AiTaskDetails | null = null;
+  if (aiTaskDetails && typeof aiTaskDetails === 'object') {
+    const pick = (k: string) => {
+      const v = (aiTaskDetails as Record<string, unknown>)[k];
+      return typeof v === 'string' && v.trim() ? v.trim().slice(0, 1000) : undefined;
+    };
+    const request = pick('request');
+    if (request) {
+      const rt = pick('requestType');
+      taskDetails = {
+        request,
+        requestType: rt && rt in REQUEST_TYPES ? (rt as AiTaskDetails['requestType']) : undefined,
+        bookingNumber: pick('bookingNumber'),
+        agencyId: pick('agencyId'),
+        guestName: pick('guestName'),
+        guestDob: pick('guestDob'),
+        shipAndSailDate: pick('shipAndSailDate'),
+        mayAgreeTo: pick('mayAgreeTo'),
+        agentName: pick('agentName'),
+      };
+    }
+  }
+  const aiTaskText: string | null = taskDetails ? taskToText(taskDetails) : (typeof aiTask === 'string' && aiTask.trim() ? aiTask.trim() : null);
   if (!leadId) {
     return NextResponse.json({ error: 'leadId is required' }, { status: 400 });
   }
@@ -60,8 +86,8 @@ export async function POST(req: NextRequest) {
   const toNumber = toE164(lead.phone_number as string);
 
   const callRows = await sql`
-    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task)
-    VALUES (${ownerId}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTask ?? null})
+    INSERT INTO calls (user_id, lead_id, status, cruise_line_number, transfer_number, ivr_config_id, ai_task, ai_task_details)
+    VALUES (${ownerId}, ${leadId}, 'initiating', ${lead.phone_number as string}, ${xferNumber}, ${resolvedIvrConfigId}, ${aiTaskText}, ${taskDetails ? JSON.stringify(taskDetails) : null})
     RETURNING id
   `;
   const callId = callRows[0].id as string;

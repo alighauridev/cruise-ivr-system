@@ -1,17 +1,197 @@
 @import "tailwindcss";
 
-body {
-  margin: 0;
+/*
+ * Sand & Terracotta — a warm paper canvas, ivory surfaces, espresso text and a dark-brown sidebar,
+ * with one clay-orange accent. Other colours are used only for meaning (status).
+ */
+
+@theme static {
+  --color-canvas: #f4efe7;
+  --color-surface: #fffdf9;
+  --color-sunken: #ebe4d8;
+  --color-line: #e0d7c8;
+  --color-line-strong: #cbbfa9;
+
+  --color-ink: #2a2118;
+  --color-body: #4b3f31;
+  --color-muted: #6e5f4d;
+  --color-faint: #94856f;
+
+  --color-brand: #c4532a;
+  --color-brand-strong: #a3401a;
+  --color-brand-soft: #fadfd0;
+  --color-brand-line: #eeb094;
+
+  --color-ok: #3a8348;
+  --color-ok-soft: #d9ecd9;
+  --color-warn: #a05f06;
+  --color-warn-soft: #f7e0b2;
+  --color-bad: #b3362b;
+  --color-bad-soft: #f6d6cf;
+  --color-info: #2a6699;
+  --color-info-soft: #d6e6f3;
+  --color-ai: #724cac;
+  --color-ai-soft: #e6dbf6;
+
+  --color-side: #2f2419;
+  --color-side-strong: #221a11;
+
+  /* A real theme breakpoint so it sorts after lg (arbitrary min-[…] variants sort before it and lose). */
+  --breakpoint-wide: 90rem;
+
+  --shadow-card: 0 1px 2px rgb(42 33 24 / 0.06), 0 8px 24px -12px rgb(42 33 24 / 0.14);
+  --shadow-pop: 0 2px 6px rgb(42 33 24 / 0.08), 0 24px 56px -16px rgb(42 33 24 / 0.28);
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #111827; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+@theme inline {
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: var(--color-brand-soft);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+  button:not(:disabled),
+  [role="button"] {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-surface shadow-card;
+  }
+
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.09em] text-muted;
+  }
+
+  .field-label {
+    @apply mb-1.5 block text-xs font-medium text-body;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-line-strong bg-surface px-3.5 py-2.5 text-sm text-ink transition placeholder:text-faint focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/15 disabled:opacity-50;
+  }
+  .input-sm {
+    @apply rounded-lg px-2.5 py-1.5;
+  }
+  select.input {
+    @apply appearance-none bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2375878c' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-position: right 0.7rem center;
+    background-size: 1rem;
+  }
+  textarea.input {
+    @apply resize-none leading-relaxed;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55 disabled:active:scale-100;
+  }
+  .btn-primary {
+    @apply bg-brand text-white shadow-sm hover:bg-brand-strong;
+  }
+  .btn-secondary {
+    @apply border border-line-strong bg-surface text-ink shadow-sm hover:bg-sunken;
+  }
+  .btn-ghost {
+    @apply text-body hover:bg-sunken hover:text-ink;
+  }
+  .btn-ok {
+    @apply bg-ok text-white shadow-sm hover:brightness-95;
+  }
+  .btn-ai {
+    @apply bg-ai text-white shadow-sm hover:brightness-95;
+  }
+  .btn-danger {
+    @apply border border-bad/25 bg-bad-soft text-bad hover:bg-bad/15;
+  }
+  .btn-lg {
+    @apply rounded-2xl px-5 py-3.5 text-base;
+  }
+  .btn-icon {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted transition hover:bg-sunken hover:text-ink;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium;
+    background: var(--tone-bg);
+    color: var(--tone-fg);
+  }
+  .tone-neutral { --tone-bg: var(--color-sunken); --tone-fg: var(--color-body); }
+  .tone-brand { --tone-bg: var(--color-brand-soft); --tone-fg: var(--color-brand-strong); }
+  .tone-ok { --tone-bg: var(--color-ok-soft); --tone-fg: var(--color-ok); }
+  .tone-warn { --tone-bg: var(--color-warn-soft); --tone-fg: var(--color-warn); }
+  .tone-bad { --tone-bg: var(--color-bad-soft); --tone-fg: var(--color-bad); }
+  .tone-info { --tone-bg: var(--color-info-soft); --tone-fg: var(--color-info); }
+  .tone-ai { --tone-bg: var(--color-ai-soft); --tone-fg: var(--color-ai); }
+
+  .th {
+    @apply bg-sunken/70 px-5 py-3 text-left text-[11px] font-bold uppercase tracking-[0.09em] text-body;
+  }
+  .td {
+    @apply px-5 py-3.5 text-sm text-body;
+  }
+}
+
+/* Motion: one calm entrance, a soft live pulse, a spinner. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.rise {
+  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
 @keyframes pulse-ring {
-  0% { transform: scale(0.8); opacity: 1; }
-  100% { transform: scale(1.6); opacity: 0; }
+  0% { transform: scale(0.8); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
 }
-.pulse-ring { animation: pulse-ring 1.5s ease-out infinite; }
+.pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+@keyframes drift {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -14px, 0); }
+}
+.drift {
+  animation: drift 9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .pulse-ring, .drift { animation: none; }
+}
+
+/* Slim, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-faint); background-clip: content-box; border: 2px solid transparent; }
+
+
+
+
+/* palette: sand-terracotta */

@@ -22,14 +22,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-canvas">
       <Sidebar
         user={{ name: me.name, email: me.email }}
         isAdmin={ctx.isAdmin}
         realUserId={ctx.realUserId}
         actingAsId={ctx.impersonating ? ctx.effectiveUserId : null}
       />
-      <main className="flex-1 overflow-y-auto bg-gray-950 flex flex-col">
+      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-canvas">
         {actingUser && <ImpersonationBanner name={actingUser.name} email={actingUser.email} />}
         <div className="flex-1 overflow-y-auto">{children}</div>
       </main>

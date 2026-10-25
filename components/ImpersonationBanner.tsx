@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Icon } from './icons';
 
 interface Props {
   name: string;
@@ -22,16 +23,18 @@ export default function ImpersonationBanner({ name, email }: Props) {
   };
 
   return (
-    <div className="flex items-center justify-between gap-4 px-8 py-2.5 bg-amber-950/60 border-b border-amber-700/50 text-amber-200">
-      <p className="text-sm">
-        <span className="font-semibold">Acting as {name}</span>
-        <span className="text-amber-400/70"> · {email}</span>
-        <span className="text-amber-400/70"> — everything you do is saved to this user&apos;s account.</span>
+    <div className="flex items-center justify-between gap-4 border-b border-warn/20 bg-warn-soft px-10 py-2.5 text-warn max-lg:px-6">
+      <p className="flex items-center gap-2.5 text-sm">
+        <Icon name="shield" className="h-4 w-4 flex-shrink-0" />
+        <span>
+          <span className="font-semibold">Acting as {name}</span>
+          <span className="opacity-75"> · {email} — everything you do is saved to this user&apos;s account.</span>
+        </span>
       </p>
       <button
         onClick={exit}
         disabled={busy}
-        className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-700/40 hover:bg-amber-700/60 border border-amber-600/50 text-amber-100 transition-colors disabled:opacity-50 flex-shrink-0"
+        className="btn flex-shrink-0 border border-warn/30 bg-surface/70 !px-3 !py-1.5 text-xs text-warn hover:bg-surface"
       >
         Exit impersonation
       </button>

@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import type { IVRStep, IVRStepType } from '@/lib/ivr-engine';
+import { Icon, type IconName } from '@/components/icons';
+import { EmptyState, PageHeader, type Tone } from '@/components/ui';
 
 interface IVRConfig {
   id: string;
@@ -16,12 +18,22 @@ interface Lead {
   name: string;
 }
 
-const STEP_TYPES: { type: IVRStepType; label: string; color: string; icon: string }[] = [
-  { type: 'wait', label: 'Wait', color: 'bg-yellow-900/40 border-yellow-700/50 text-yellow-400', icon: '⏱' },
-  { type: 'dtmf', label: 'Press Key', color: 'bg-blue-900/40 border-blue-700/50 text-blue-400', icon: '🔢' },
-  { type: 'voice', label: 'Speak', color: 'bg-purple-900/40 border-purple-700/50 text-purple-400', icon: '🗣' },
-  { type: 'hold', label: 'Hold & Detect', color: 'bg-green-900/40 border-green-700/50 text-green-400', icon: '📞' },
+const STEP_TYPES: { type: IVRStepType; label: string; hint: string; tone: Tone; icon: IconName }[] = [
+  { type: 'wait', label: 'Wait', hint: 'Pause for a few seconds', tone: 'warn', icon: 'clock' },
+  { type: 'dtmf', label: 'Press key', hint: 'Send a keypad digit', tone: 'info', icon: 'dialpad' },
+  { type: 'voice', label: 'Speak', hint: 'Say a phrase to the menu', tone: 'ai', icon: 'mic' },
+  { type: 'hold', label: 'Hold & detect', hint: 'Wait for a live agent', tone: 'ok', icon: 'phone' },
 ];
+
+const CHIP: Record<Tone, string> = {
+  neutral: 'bg-sunken text-body',
+  brand: 'bg-brand-soft text-brand-strong',
+  ok: 'bg-ok-soft text-ok',
+  warn: 'bg-warn-soft text-warn',
+  bad: 'bg-bad-soft text-bad',
+  info: 'bg-info-soft text-info',
+  ai: 'bg-ai-soft text-ai',
+};
 
 const DEFAULT_CRUISE_IVR_STEPS: IVRStep[] = [
   { order: 1, type: 'wait', duration_seconds: 5, description: 'Wait for IVR greeting' },
@@ -145,69 +157,59 @@ export default function IVRBuilderPage() {
   const isEditing = selectedConfig || showNew;
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="px-8 py-6 border-b border-gray-800 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">IVR Builder</h1>
-          <p className="text-gray-400 text-sm mt-1">Configure IVR navigation flows per cruise line</p>
-        </div>
-        <button
-          onClick={startNew}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          New Config
-        </button>
-      </div>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="IVR Builder"
+        subtitle="Teach the system how to get through each cruise line's phone menu"
+        actions={
+          <button onClick={startNew} className="btn btn-primary">
+            <Icon name="plus" className="h-4 w-4" />
+            New config
+          </button>
+        }
+      />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)] gap-5 px-10 pb-8 max-lg:grid-cols-1 max-lg:px-6">
         {/* Config list */}
-        <div className="w-72 border-r border-gray-800 overflow-y-auto bg-gray-900/40 p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Saved Configs</p>
+        <aside className="card min-h-0 self-start overflow-y-auto p-3 max-h-full max-lg:max-h-60">
+          <p className="eyebrow mb-2 px-2.5 pt-1.5">Saved configs</p>
           {configs.length === 0 ? (
-            <p className="text-gray-600 text-sm text-center mt-4">No configs yet</p>
+            <p className="px-2.5 py-6 text-center text-sm text-muted">No configs yet</p>
           ) : (
-            configs.map((cfg) => (
-              <button
-                key={cfg.id}
-                onClick={() => selectConfig(cfg)}
-                className={`w-full text-left px-4 py-3 rounded-xl mb-2 border transition-colors ${
-                  selectedConfig?.id === cfg.id
-                    ? 'bg-blue-600/20 border-blue-600/50 text-white'
-                    : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-white hover:border-gray-700'
-                }`}
-              >
-                <p className="text-sm font-medium truncate">{cfg.name}</p>
-                {cfg.lead_name && <p className="text-xs opacity-60 mt-0.5 truncate">{cfg.lead_name}</p>}
-                <p className="text-xs opacity-40 mt-1">{cfg.steps?.length ?? 0} steps</p>
-              </button>
-            ))
+            configs.map((cfg) => {
+              const selected = selectedConfig?.id === cfg.id;
+              return (
+                <button
+                  key={cfg.id}
+                  onClick={() => selectConfig(cfg)}
+                  className={`mb-0.5 w-full rounded-xl px-3 py-2.5 text-left transition-colors ${
+                    selected ? 'bg-brand-soft ring-1 ring-brand-line' : 'hover:bg-sunken'
+                  }`}
+                >
+                  <p className={`truncate text-sm font-semibold ${selected ? 'text-brand-strong' : 'text-ink'}`}>{cfg.name}</p>
+                  {cfg.lead_name && <p className="mt-0.5 truncate text-xs text-muted">{cfg.lead_name}</p>}
+                  <p className="mt-1 text-xs text-faint">{cfg.steps?.length ?? 0} steps</p>
+                </button>
+              );
+            })
           )}
-        </div>
+        </aside>
 
         {/* Editor */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <section className="card flex min-h-0 flex-col overflow-hidden">
           {isEditing ? (
             <>
               {/* Config meta */}
-              <div className="px-6 py-4 border-b border-gray-800 flex items-center gap-4">
-                <div className="flex-1">
-                  <input
-                    type="text"
-                    placeholder="Config name (e.g. Royal Caribbean - Reservations)"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
+              <div className="flex flex-wrap items-center gap-3 border-b border-line p-4">
+                <input
+                  type="text"
+                  placeholder="Config name (e.g. Royal Caribbean - Reservations)"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="input min-w-64 flex-1"
+                />
                 {showNew && (
-                  <select
-                    value={leadId}
-                    onChange={(e) => setLeadId(e.target.value)}
-                    className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                  >
+                  <select value={leadId} onChange={(e) => setLeadId(e.target.value)} className="input !w-56">
                     <option value="">Link to lead (optional)</option>
                     {leads.map((l) => (
                       <option key={l.id} value={l.id}>{l.name}</option>
@@ -216,150 +218,148 @@ export default function IVRBuilderPage() {
                 )}
                 <div className="flex items-center gap-2">
                   {selectedConfig && (
-                    <button
-                      onClick={() => deleteConfig(selectedConfig.id)}
-                      className="text-red-500 hover:text-red-400 border border-red-900/50 px-3 py-2.5 rounded-xl text-sm transition-colors"
-                    >
+                    <button onClick={() => deleteConfig(selectedConfig.id)} className="btn btn-danger">
+                      <Icon name="trash" className="h-4 w-4" />
                       Delete
                     </button>
                   )}
-                  <button
-                    onClick={saveConfig}
-                    disabled={saving || !name}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2"
-                  >
+                  <button onClick={saveConfig} disabled={saving || !name} className="btn btn-primary min-w-32">
                     {saved ? (
                       <>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
+                        <Icon name="check" className="h-4 w-4" strokeWidth={2.5} />
                         Saved
                       </>
-                    ) : saving ? 'Saving...' : 'Save Config'}
+                    ) : saving ? 'Saving…' : 'Save config'}
                   </button>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-6">
-                <div className="flex gap-6">
+              <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                <div className="flex gap-8 max-xl:flex-col">
                   {/* Steps */}
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-4">IVR Steps (in order)</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="eyebrow mb-4">Steps, in order</p>
                     {steps.length === 0 ? (
-                      <div className="text-center py-12 border-2 border-dashed border-gray-800 rounded-2xl">
-                        <p className="text-gray-600">No steps yet. Add steps from the right panel.</p>
+                      <div className="rounded-2xl border-2 border-dashed border-line-strong py-14 text-center">
+                        <p className="text-sm text-muted">No steps yet. Add one from the panel on the right.</p>
                       </div>
                     ) : (
-                      <div className="space-y-3">
+                      <ol className="relative space-y-3">
+                        {/* the call path */}
+                        <span aria-hidden className="absolute bottom-6 left-[13px] top-6 w-px bg-line-strong" />
                         {steps.map((step, idx) => {
                           const typeInfo = STEP_TYPES.find((t) => t.type === step.type);
+                          const tone = typeInfo?.tone ?? 'neutral';
                           return (
-                            <div key={idx} className={`rounded-xl border p-4 ${typeInfo?.color ?? 'bg-gray-900 border-gray-700 text-gray-400'}`}>
-                              <div className="flex items-start gap-3">
-                                <div className="flex flex-col gap-1 mt-1">
-                                  <button onClick={() => moveStep(idx, -1)} disabled={idx === 0} className="opacity-40 hover:opacity-100 disabled:opacity-20">
-                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                                    </svg>
-                                  </button>
-                                  <button onClick={() => moveStep(idx, 1)} disabled={idx === steps.length - 1} className="opacity-40 hover:opacity-100 disabled:opacity-20">
-                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                    </svg>
-                                  </button>
-                                </div>
-
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <span className="text-base">{typeInfo?.icon}</span>
-                                    <span className="text-xs font-bold uppercase tracking-wider opacity-70">{typeInfo?.label}</span>
-                                    <span className="text-xs opacity-40 ml-auto">Step {idx + 1}</span>
-                                  </div>
-
-                                  {/* Step-specific inputs */}
-                                  {step.type === 'wait' && (
-                                    <div className="flex items-center gap-2">
-                                      <label className="text-xs opacity-70">Wait</label>
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        value={step.duration_seconds ?? 3}
-                                        onChange={(e) => updateStep(idx, { duration_seconds: parseInt(e.target.value) })}
-                                        className="w-16 bg-black/20 border border-current/20 rounded-lg px-2 py-1 text-sm focus:outline-none"
-                                      />
-                                      <label className="text-xs opacity-70">seconds</label>
+                            <li key={idx} className="relative flex items-start gap-3">
+                              <span className={`relative z-10 mt-3.5 flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-full ring-4 ring-surface ${CHIP[tone]}`}>
+                                <Icon name={typeInfo?.icon ?? 'flow'} className="h-3.5 w-3.5" strokeWidth={2} />
+                              </span>
+                              <div className="min-w-0 flex-1 rounded-2xl border border-line bg-canvas/60 p-4">
+                                <div className="flex items-start gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="mb-2.5 flex items-center gap-2">
+                                      <span className="text-sm font-semibold text-ink">{typeInfo?.label}</span>
+                                      <span className="text-xs text-faint">Step {idx + 1}</span>
                                     </div>
-                                  )}
-                                  {step.type === 'dtmf' && (
-                                    <div className="flex items-center gap-2">
-                                      <label className="text-xs opacity-70">Press digit</label>
+
+                                    {/* Step-specific inputs */}
+                                    {step.type === 'wait' && (
+                                      <div className="flex items-center gap-2 text-sm text-body">
+                                        Wait
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          value={step.duration_seconds ?? 3}
+                                          onChange={(e) => updateStep(idx, { duration_seconds: parseInt(e.target.value) })}
+                                          className="input input-sm !w-20 text-center"
+                                        />
+                                        seconds
+                                      </div>
+                                    )}
+                                    {step.type === 'dtmf' && (
+                                      <div className="flex items-center gap-2 text-sm text-body">
+                                        Press digit
+                                        <input
+                                          type="text"
+                                          maxLength={1}
+                                          value={step.digit ?? ''}
+                                          onChange={(e) => updateStep(idx, { digit: e.target.value })}
+                                          className="input input-sm !w-14 text-center font-mono"
+                                        />
+                                      </div>
+                                    )}
+                                    {step.type === 'voice' && (
                                       <input
                                         type="text"
-                                        maxLength={1}
-                                        value={step.digit ?? ''}
-                                        onChange={(e) => updateStep(idx, { digit: e.target.value })}
-                                        className="w-12 bg-black/20 border border-current/20 rounded-lg px-2 py-1 text-sm text-center focus:outline-none"
+                                        placeholder="Phrase to speak…"
+                                        value={step.phrase ?? ''}
+                                        onChange={(e) => updateStep(idx, { phrase: e.target.value })}
+                                        className="input input-sm"
                                       />
-                                    </div>
-                                  )}
-                                  {step.type === 'voice' && (
+                                    )}
+                                    {step.type === 'hold' && (
+                                      <p className="text-sm text-muted">The system streams the audio and listens for a live agent&apos;s voice.</p>
+                                    )}
+
                                     <input
                                       type="text"
-                                      placeholder="Phrase to speak..."
-                                      value={step.phrase ?? ''}
-                                      onChange={(e) => updateStep(idx, { phrase: e.target.value })}
-                                      className="w-full bg-black/20 border border-current/20 rounded-lg px-3 py-1.5 text-sm focus:outline-none placeholder-current/30"
+                                      placeholder="Description…"
+                                      value={step.description}
+                                      onChange={(e) => updateStep(idx, { description: e.target.value })}
+                                      className="mt-3 w-full border-0 border-b border-dashed border-line-strong bg-transparent px-0 py-1 text-xs text-muted placeholder:text-faint focus:border-brand focus:text-ink focus:outline-none"
                                     />
-                                  )}
-                                  {step.type === 'hold' && (
-                                    <p className="text-xs opacity-60">System will stream audio and detect live agent voice</p>
-                                  )}
+                                  </div>
 
-                                  <input
-                                    type="text"
-                                    placeholder="Description..."
-                                    value={step.description}
-                                    onChange={(e) => updateStep(idx, { description: e.target.value })}
-                                    className="mt-2 w-full bg-black/10 border-0 border-b border-current/20 px-0 py-1 text-xs opacity-60 focus:outline-none focus:opacity-100 placeholder-current/30"
-                                  />
+                                  <div className="flex flex-shrink-0 items-center gap-0.5">
+                                    <button onClick={() => moveStep(idx, -1)} disabled={idx === 0} className="btn-icon disabled:opacity-25" title="Move up">
+                                      <Icon name="chevronUp" className="h-4 w-4" />
+                                    </button>
+                                    <button onClick={() => moveStep(idx, 1)} disabled={idx === steps.length - 1} className="btn-icon disabled:opacity-25" title="Move down">
+                                      <Icon name="chevronDown" className="h-4 w-4" />
+                                    </button>
+                                    <button onClick={() => removeStep(idx)} className="btn-icon hover:!bg-bad-soft hover:!text-bad" title="Remove step">
+                                      <Icon name="x" className="h-4 w-4" />
+                                    </button>
+                                  </div>
                                 </div>
-
-                                <button onClick={() => removeStep(idx)} className="opacity-40 hover:opacity-100 flex-shrink-0 mt-1">
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
                               </div>
-                            </div>
+                            </li>
                           );
                         })}
-                      </div>
+                      </ol>
                     )}
                   </div>
 
                   {/* Add step panel */}
-                  <div className="w-52 flex-shrink-0">
-                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-4">Add Step</p>
-                    <div className="space-y-2">
+                  <div className="w-60 flex-shrink-0 max-xl:w-full">
+                    <p className="eyebrow mb-4">Add a step</p>
+                    <div className="space-y-2 max-xl:grid max-xl:grid-cols-2 max-xl:gap-2 max-xl:space-y-0">
                       {STEP_TYPES.map((t) => (
                         <button
                           key={t.type}
                           onClick={() => addStep(t.type)}
-                          className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-medium transition-opacity hover:opacity-80 ${t.color}`}
+                          className="flex w-full items-center gap-3 rounded-xl border border-line bg-surface p-3 text-left transition hover:border-brand-line hover:bg-brand-soft/40"
                         >
-                          <span className="mr-2">{t.icon}</span> {t.label}
+                          <span className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${CHIP[t.tone]}`}>
+                            <Icon name={t.icon} className="h-[18px] w-[18px]" />
+                          </span>
+                          <span>
+                            <span className="block text-sm font-semibold text-ink">{t.label}</span>
+                            <span className="block text-xs text-muted">{t.hint}</span>
+                          </span>
                         </button>
                       ))}
                     </div>
 
-                    <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-3">
-                      <p className="text-xs text-gray-500 mb-2">Typical IVR order:</p>
-                      <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                        <li>Wait (greeting)</li>
-                        <li>Press Key (menu)</li>
-                        <li>Wait (submenu)</li>
-                        <li>Press Key / Speak</li>
-                        <li>Hold & Detect</li>
+                    <div className="mt-5 rounded-xl bg-canvas p-4">
+                      <p className="mb-2 text-xs font-semibold text-body">A typical menu</p>
+                      <ol className="list-inside list-decimal space-y-1 text-xs text-muted">
+                        <li>Wait for the greeting</li>
+                        <li>Press a key</li>
+                        <li>Wait for the submenu</li>
+                        <li>Press a key or speak</li>
+                        <li>Hold & detect</li>
                       </ol>
                     </div>
                   </div>
@@ -367,19 +367,9 @@ export default function IVRBuilderPage() {
               </div>
             </>
           ) : (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <div className="w-20 h-20 rounded-full bg-gray-900 border border-gray-800 flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-10 h-10 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-                  </svg>
-                </div>
-                <p className="text-gray-500 font-medium">No config selected</p>
-                <p className="text-gray-600 text-sm mt-1">Select an existing config or create a new one</p>
-              </div>
-            </div>
+            <EmptyState icon="flow" title="No config selected" hint="Select an existing config, or create a new one to get started." />
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

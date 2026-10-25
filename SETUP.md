@@ -20,6 +20,8 @@ NEXTAUTH_URL=http://localhost:3000
 
 The Twilio, Deepgram, and OpenAI keys are already filled in.
 
+AI task calls run on Claude when `ANTHROPIC_API_KEY` is set (otherwise they fall back to OpenAI Realtime). See `docs/AI_AGENT.md`.
+
 ## 3. Run Locally
 
 ```bash

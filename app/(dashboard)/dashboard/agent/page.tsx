@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { Icon } from '@/components/icons';
+import { Badge, EmptyState, LiveDot, PageHeader, STATUS_TONE, StatusBadge, type Tone } from '@/components/ui';
 
 interface Lead {
   id: string;
@@ -57,32 +59,6 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Call cancelled',
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  initiating: 'text-yellow-400',
-  navigating_ivr: 'text-blue-400',
-  on_hold: 'text-orange-400',
-  agent_detected: 'text-green-400',
-  ai_conversation: 'text-purple-400',
-  transferring: 'text-purple-400',
-  connected: 'text-green-400',
-  completed: 'text-gray-400',
-  failed: 'text-red-400',
-  cancelled: 'text-gray-400',
-};
-
-const STATUS_BG: Record<string, string> = {
-  initiating: 'bg-yellow-900/30 border-yellow-700/50',
-  navigating_ivr: 'bg-blue-900/30 border-blue-700/50',
-  on_hold: 'bg-orange-900/30 border-orange-700/50',
-  agent_detected: 'bg-green-900/30 border-green-700/50',
-  ai_conversation: 'bg-purple-900/30 border-purple-700/50',
-  transferring: 'bg-purple-900/30 border-purple-700/50',
-  connected: 'bg-green-900/30 border-green-700/50',
-  completed: 'bg-gray-800/50 border-gray-700',
-  failed: 'bg-red-900/30 border-red-700/50',
-  cancelled: 'bg-gray-800/50 border-gray-700',
-};
-
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -91,6 +67,79 @@ function formatDuration(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+interface AiTaskForm {
+  requestType: string;
+  request: string;
+  bookingNumber: string;
+  guestName: string;
+  guestDob: string;
+  shipAndSailDate: string;
+  agencyId: string;
+  agentName: string;
+  mayAgreeTo: string;
+}
+
+const EMPTY_AI_FORM: AiTaskForm = {
+  requestType: 'waitlist', request: '', bookingNumber: '', guestName: '', guestDob: '',
+  shipAndSailDate: '', agencyId: '', agentName: '', mayAgreeTo: '',
+};
+
+// Start with low-risk requests that need no payment.
+const AI_REQUEST_TYPES = [
+  { value: 'waitlist', label: 'Waitlist (tour, cabin, dining)' },
+  { value: 'status_check', label: 'Check status of a booking/request' },
+  { value: 'resend_confirmation', label: 'Resend confirmation/documents' },
+  { value: 'addon_no_payment', label: 'Add-on that needs no payment' },
+  { value: 'question', label: 'Question about a booking/policy' },
+  { value: 'other', label: 'Other' },
+];
+
+const AI_TEXT_FIELDS: Array<{ key: keyof AiTaskForm; label: string }> = [
+  { key: 'bookingNumber', label: 'Booking #' },
+  { key: 'guestName', label: 'Lead guest name' },
+  { key: 'guestDob', label: 'Guest DOB (MM/DD/YYYY)' },
+  { key: 'shipAndSailDate', label: 'Ship & sail date' },
+  { key: 'agencyId', label: 'Agency IATA/CLIA #' },
+  { key: 'agentName', label: 'Calling for (your name)' },
+];
+
+
+const TONE_TEXT: Record<Tone, string> = {
+  neutral: 'text-body', brand: 'text-brand-strong', ok: 'text-ok', warn: 'text-warn', bad: 'text-bad', info: 'text-info', ai: 'text-ai',
+};
+const TONE_BAND: Record<Tone, string> = {
+  neutral: 'bg-sunken/70', brand: 'bg-brand-soft', ok: 'bg-ok-soft', warn: 'bg-warn-soft', bad: 'bg-bad-soft', info: 'bg-info-soft', ai: 'bg-ai-soft',
+};
+const DOT_BG: Record<Tone, string> = {
+  neutral: 'bg-faint', brand: 'bg-brand', ok: 'bg-ok', warn: 'bg-warn', bad: 'bg-bad', info: 'bg-info', ai: 'bg-ai',
+};
+const EVENT_LABEL: Record<string, string> = {
+  call_initiated: 'Call placed',
+  entered_hold: 'Entered hold',
+  agent_detected: 'Live agent detected',
+  transfer_initiated: 'Transfer started',
+  call_ended_by_user: 'Call ended by you',
+  voicemail_detected: 'Voicemail detected',
+  max_duration_exceeded: 'Max call length reached',
+  conversation_ai_say: 'AI spoke',
+  conversation_transcript: 'Rep spoke',
+  ai_outcome: 'Outcome saved',
+  ai_handoff: 'Handed to team',
+};
+const EVENT_TONE: Record<string, Tone> = {
+  conversation_ai_say: 'ai',
+  conversation_transcript: 'info',
+  ai_outcome: 'ok',
+  ai_handoff: 'brand',
+  call_initiated: 'info',
+  entered_hold: 'warn',
+  agent_detected: 'ok',
+  transfer_initiated: 'brand',
+  call_ended_by_user: 'bad',
+  voicemail_detected: 'warn',
+  max_duration_exceeded: 'bad',
+};
+
 export default function AgentPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [ivrConfigs, setIvrConfigs] = useState<IVRConfig[]>([]);
@@ -98,7 +147,22 @@ export default function AgentPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [selectedIvrConfigId, setSelectedIvrConfigId] = useState<string>('');
   const [selectedTransferNumberId, setSelectedTransferNumberId] = useState<string>('');
-  const [aiTask, setAiTask] = useState('');
+  const [aiForm, setAiForm] = useState<AiTaskForm>(EMPTY_AI_FORM);
+  const aiTask = aiForm.request;
+  const setAiField = (k: keyof AiTaskForm, v: string) => {
+    setAiForm((f) => ({ ...f, [k]: v }));
+    // Remember who's calling and the agency ID between calls (this browser only).
+    if (k === 'agencyId' || k === 'agentName') {
+      try { localStorage.setItem(`cruisepro.${k}`, v); } catch {}
+    }
+  };
+  useEffect(() => {
+    try {
+      const agencyId = localStorage.getItem('cruisepro.agencyId') ?? '';
+      const agentName = localStorage.getItem('cruisepro.agentName') ?? '';
+      if (agencyId || agentName) setAiForm((f) => ({ ...f, agencyId, agentName }));
+    } catch {}
+  }, []);
   const [search, setSearch] = useState('');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
@@ -144,7 +208,8 @@ export default function AgentPage() {
 
   // Auto-scroll conversation
   useEffect(() => {
-    convEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const pane = convEndRef.current?.parentElement;
+    if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' });
   }, [convMessages]);
 
   // Cleanup SSE on unmount
@@ -234,7 +299,10 @@ export default function AgentPage() {
         updateCall(msg.call);
       }
 
-      setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+      setTimeout(() => {
+        const pane = logsEndRef.current?.parentElement;
+        if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' });
+      }, 50);
     };
 
     es.onerror = () => {
@@ -266,7 +334,7 @@ export default function AgentPage() {
         leadId: selectedLead.id,
         ivrConfigId: selectedIvrConfigId || undefined,
         transferNumber: selectedTransferNumber?.phone,
-        aiTask: aiTask.trim() || undefined,
+        aiTaskDetails: aiTask.trim() ? aiForm : undefined,
       }),
     });
 
@@ -375,508 +443,449 @@ export default function AgentPage() {
 
   const isLiveStatus = activeCall && !['completed', 'failed', 'cancelled'].includes(activeCall.status);
 
+  const tone: Tone = activeCall ? STATUS_TONE[activeCall.status] ?? 'neutral' : 'neutral';
+  const progressSteps = [
+    { key: 'initiating', label: 'Dialing' },
+    { key: 'navigating_ivr', label: 'Menu' },
+    { key: 'on_hold', label: 'On hold' },
+    { key: 'agent_detected', label: 'Agent' },
+    ...(aiTask.trim() ? [{ key: 'ai_conversation', label: 'AI chat' }] : []),
+    { key: 'connected', label: 'Connected' },
+  ];
+  const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', ...(aiTask.trim() ? ['ai_conversation'] : []), 'connected', 'completed'];
+
   return (
-    <div className="h-full flex flex-col">
-      {/* Header */}
-      <div className="px-8 py-6 border-b border-gray-800">
-        <h1 className="text-2xl font-bold text-white">Call Agent</h1>
-        <p className="text-gray-400 text-sm mt-1">Select a cruise line and place an automated hold call</p>
-      </div>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Call Agent"
+        subtitle="Pick a cruise line, set the task, and let the system wait on hold for you."
+        actions={activeCall ? <StatusBadge status={activeCall.status} /> : undefined}
+      />
 
-      <div className="flex-1 flex gap-6 p-8 overflow-hidden">
-        {/* Left: Lead selector */}
-        <div className="w-96 flex flex-col gap-4">
-          <div className="bg-gray-900 rounded-2xl border border-gray-800 flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-gray-800">
-              <input
-                type="text"
-                placeholder="Search cruise lines..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            <div className="flex-1 overflow-y-auto max-h-96">
-              {filteredLeads.length === 0 ? (
-                <div className="p-6 text-center text-gray-500 text-sm">
-                  No cruise lines found. Add them in Leads.
+      <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-10 max-lg:px-6">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:grid-rows-[auto_1fr] wide:grid-cols-[340px_minmax(0,1fr)_320px] wide:items-stretch">
+          {/* ── Left: choose + configure ── */}
+          <div className="space-y-4 lg:row-span-2 wide:row-span-1">
+            <section className="card overflow-hidden">
+              <div className="border-b border-line p-3.5">
+                <p className="eyebrow mb-2.5 px-0.5">1 · Cruise line</p>
+                <div className="relative">
+                  <Icon name="search" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+                  <input
+                    type="text"
+                    placeholder="Search cruise lines…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="input pl-10"
+                  />
                 </div>
-              ) : (
-                filteredLeads.map((lead) => (
-                  <button
-                    key={lead.id}
-                    onClick={() => handleSelectLead(lead)}
-                    disabled={!!isLiveStatus}
-                    className={`w-full text-left px-4 py-3.5 border-b border-gray-800 last:border-0 transition-colors ${
-                      selectedLead?.id === lead.id
-                        ? 'bg-blue-900/40 border-l-2 border-l-blue-500'
-                        : 'hover:bg-gray-800/50'
-                    } disabled:opacity-40 disabled:cursor-not-allowed`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-white">{lead.name}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">{lead.phone_number}</p>
-                      </div>
-                      <div className="flex flex-col items-end gap-1">
-                        {lead.category && (
-                          <span className="text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400">
-                            {lead.category}
-                          </span>
-                        )}
-                        {isAdmin && lead.owner_name && (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/40 text-red-400 border border-red-700/50">
-                            {lead.owner_name}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-600 mt-1">{lead.directory_name}</p>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Selected lead info + config selectors */}
-          {selectedLead && !isLiveStatus && (
-            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-4 space-y-3">
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Selected</p>
-                <p className="text-white font-semibold">{selectedLead.name}</p>
-                <p className="text-gray-400 text-sm">{selectedLead.phone_number}</p>
-                {selectedLead.category && (
-                  <p className="text-gray-500 text-xs mt-0.5">{selectedLead.category}</p>
+              </div>
+              <div className="max-h-[calc(100vh-32rem)] min-h-72 overflow-y-auto p-2">
+                {filteredLeads.length === 0 ? (
+                  <p className="px-4 py-8 text-center text-sm text-muted">No cruise lines found. Add them in Leads.</p>
+                ) : (
+                  filteredLeads.map((lead) => {
+                    const selected = selectedLead?.id === lead.id;
+                    return (
+                      <button
+                        key={lead.id}
+                        onClick={() => handleSelectLead(lead)}
+                        disabled={!!isLiveStatus}
+                        className={`mb-0.5 w-full rounded-xl px-3.5 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
+                          selected ? 'bg-brand-soft ring-1 ring-brand-line' : 'hover:bg-sunken'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className={`truncate text-sm font-semibold ${selected ? 'text-brand-strong' : 'text-ink'}`}>{lead.name}</p>
+                            <p className="mt-0.5 font-mono text-xs text-muted">{lead.phone_number}</p>
+                          </div>
+                          <div className="flex flex-shrink-0 flex-col items-end gap-1">
+                            {lead.category && <Badge tone="info">{lead.category}</Badge>}
+                            {isAdmin && lead.owner_name && <Badge tone="bad">{lead.owner_name}</Badge>}
+                          </div>
+                        </div>
+                        {lead.directory_name && <p className="mt-1 text-xs text-faint">{lead.directory_name}</p>}
+                      </button>
+                    );
+                  })
                 )}
               </div>
+            </section>
 
-              {/* IVR Config selector — configs are already scoped to the current (effective) user */}
-              {(() => {
-                const visibleConfigs = ivrConfigs;
-                return visibleConfigs.length > 0 ? (
+            {selectedLead && !isLiveStatus && (
+              <section className="card rise space-y-4 p-5">
+                <div>
+                  <p className="eyebrow mb-3">2 · Call setup</p>
+                  <div className="flex items-center gap-3 rounded-xl bg-canvas p-3">
+                    <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-brand-soft font-display text-lg text-brand-strong">
+                      {selectedLead.name.charAt(0).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">{selectedLead.name}</p>
+                      <p className="font-mono text-xs text-muted">{selectedLead.phone_number}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* IVR Config selector — configs are already scoped to the current (effective) user */}
+                {ivrConfigs.length > 0 && (
                   <div>
-                    <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">IVR Script</label>
-                    <select
-                      value={selectedIvrConfigId}
-                      onChange={(e) => setSelectedIvrConfigId(e.target.value)}
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="">— No IVR (hold detection only) —</option>
-                      {visibleConfigs.map((cfg) => (
+                    <label className="field-label">IVR script</label>
+                    <select value={selectedIvrConfigId} onChange={(e) => setSelectedIvrConfigId(e.target.value)} className="input">
+                      <option value="">No IVR (hold detection only)</option>
+                      {ivrConfigs.map((cfg) => (
                         <option key={cfg.id} value={cfg.id}>{cfg.name}</option>
                       ))}
                     </select>
                   </div>
-                ) : null;
-              })()}
+                )}
 
-              {/* Transfer number selector */}
-              {transferNumbers.length > 1 && (
-                <div>
-                  <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">Transfer To</label>
-                  <select
-                    value={selectedTransferNumberId}
-                    onChange={(e) => setSelectedTransferNumberId(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                  >
-                    {transferNumbers.map((n) => (
-                      <option key={n.id} value={n.id}>{n.name} — {n.phone}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* AI Task input */}
-              <div>
-                <label className="text-xs text-gray-500 uppercase tracking-wider block mb-1">Task for AI Agent</label>
-                <textarea
-                  rows={3}
-                  placeholder={`What do you need? e.g. "Book a 7-night Caribbean cruise for 2 adults, June 15 departure, budget $3500"`}
-                  value={aiTask}
-                  onChange={(e) => setAiTask(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 resize-none"
-                />
-                <p className="text-xs text-gray-600 mt-1">
-                  {aiTask.trim()
-                    ? 'AI will speak this task to the agent and handle the conversation.'
-                    : 'Leave blank to use the standard connect message.'}
-                </p>
-              </div>
-
-              {!selectedIvrConfigId && (
-                <p className="text-yellow-500 text-xs">
-                  No IVR script selected — will go straight to hold detection.
-                </p>
-              )}
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-red-950 border border-red-800 rounded-xl p-4 text-red-300 text-sm">{error}</div>
-          )}
-
-          <button
-            onClick={handlePlaceCall}
-            disabled={!selectedLead || callLoading || !!isLiveStatus}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-2xl transition-colors text-lg flex items-center justify-center gap-3"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-            </svg>
-            {callLoading ? 'Placing Call...' : 'Place Call'}
-          </button>
-        </div>
-
-        {/* Right: Active call panel */}
-        <div className="flex-1 flex gap-4 min-w-0">
-          {activeCall ? (
-            <div
-              className={`rounded-2xl border p-6 flex flex-col overflow-hidden ${STATUS_BG[activeCall.status] ?? 'bg-gray-900 border-gray-800'}`}
-            >
-              {/* Status indicator */}
-              <div className="flex items-start justify-between mb-8">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    {isLiveStatus && (
-                      <div className="relative">
-                        <div className="w-3 h-3 rounded-full bg-green-500 pulse-ring absolute" />
-                        <div className="w-3 h-3 rounded-full bg-green-500" />
-                      </div>
-                    )}
-                    <span className={`text-xl font-bold ${STATUS_COLORS[activeCall.status] ?? 'text-gray-400'}`}>
-                      {STATUS_LABELS[activeCall.status] ?? activeCall.status}
-                    </span>
+                {/* Transfer number selector */}
+                {transferNumbers.length > 1 && (
+                  <div>
+                    <label className="field-label">Transfer to</label>
+                    <select value={selectedTransferNumberId} onChange={(e) => setSelectedTransferNumberId(e.target.value)} className="input">
+                      {transferNumbers.map((n) => (
+                        <option key={n.id} value={n.id}>{n.name} — {n.phone}</option>
+                      ))}
+                    </select>
                   </div>
-                  <p className="text-gray-300 font-medium">{activeCall.leadName}</p>
-                  <p className="text-gray-500 text-sm">{activeCall.leadPhone}</p>
+                )}
+
+                {/* AI Task form */}
+                <div className="space-y-2.5 rounded-2xl border border-ai/15 bg-ai-soft/50 p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-ink">
+                      <Icon name="spark" className="h-4 w-4 text-ai" />
+                      AI assistant task
+                    </p>
+                    <Badge tone="ai">Optional</Badge>
+                  </div>
+                  <select value={aiForm.requestType} onChange={(e) => setAiField('requestType', e.target.value)} className="input">
+                    {AI_REQUEST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                  <textarea
+                    rows={2}
+                    placeholder='Exact request, e.g. "Add guest to the waitlist for the Denali tundra tour on Aug 12"'
+                    value={aiForm.request}
+                    onChange={(e) => setAiField('request', e.target.value)}
+                    className="input"
+                  />
+                  {aiTask.trim() && (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        {AI_TEXT_FIELDS.map((f) => (
+                          <input
+                            key={f.key}
+                            placeholder={f.label}
+                            value={aiForm[f.key]}
+                            onChange={(e) => setAiField(f.key, e.target.value)}
+                            className="input input-sm"
+                          />
+                        ))}
+                      </div>
+                      <textarea
+                        rows={2}
+                        placeholder='What the AI may agree to, e.g. "Any waitlist position; nothing that changes price"'
+                        value={aiForm.mayAgreeTo}
+                        onChange={(e) => setAiField('mayAgreeTo', e.target.value)}
+                        className="input"
+                      />
+                      {!aiForm.bookingNumber.trim() && aiForm.requestType !== 'question' && (
+                        <p className="text-xs text-warn">Most reps will ask for the booking number.</p>
+                      )}
+                    </>
+                  )}
+                  <p className="text-xs leading-relaxed text-muted">
+                    {aiTask.trim()
+                      ? 'The AI introduces itself as an AI assistant for the agency, handles the request, hangs up, and texts you a summary. It hands the rep to the Transfer To number for payment, verification it lacks, or if the rep won’t work with an AI. Never enter card numbers here.'
+                      : 'Leave blank to use the standard connect message and transfer.'}
+                  </p>
                 </div>
 
-                <div className="text-right">
-                  <p className="text-3xl font-mono font-bold text-white">{formatDuration(elapsed)}</p>
-                  <p className="text-xs text-gray-500 mt-1">Total elapsed</p>
+                {!selectedIvrConfigId && (
+                  <p className="rounded-xl bg-warn-soft px-3.5 py-2.5 text-xs text-warn">
+                    No IVR script selected, so the call goes straight to hold detection.
+                  </p>
+                )}
+              </section>
+            )}
+
+            {error && (
+              <div role="alert" className="rounded-xl bg-bad-soft px-4 py-3 text-sm text-bad">{error}</div>
+            )}
+
+            <button
+              onClick={handlePlaceCall}
+              disabled={!selectedLead || callLoading || !!isLiveStatus}
+              className="btn btn-primary btn-lg w-full"
+            >
+              <Icon name="phone" className="h-5 w-5" />
+              {callLoading ? 'Placing call…' : 'Place call'}
+            </button>
+          </div>
+
+          {/* ── Center: the call ── */}
+          <div className="min-w-0 wide:[&>section]:h-full">
+            {activeCall ? (
+              <section className="card rise flex min-h-[560px] flex-col overflow-hidden">
+                {/* Status band */}
+                <div className={`flex items-start justify-between gap-4 px-7 py-6 ${TONE_BAND[tone]}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                      {isLiveStatus && <LiveDot />}
+                      <h2 className={`font-display text-[26px] font-medium leading-tight ${TONE_TEXT[tone]}`}>
+                        {STATUS_LABELS[activeCall.status] ?? activeCall.status}
+                      </h2>
+                    </div>
+                    <p className="mt-2 text-sm font-semibold text-ink">{activeCall.leadName}</p>
+                    <p className="font-mono text-xs text-muted">{activeCall.leadPhone}</p>
+                  </div>
+                  <div className="flex-shrink-0 text-right">
+                    <p className="font-display text-[40px] font-medium leading-none tabular-nums text-ink">{formatDuration(elapsed)}</p>
+                    <p className="mt-1.5 text-xs text-muted">Total elapsed</p>
+                  </div>
                 </div>
-              </div>
 
-              {/* Scrollable middle content */}
-              <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
-
-              {/* IVR Progress */}
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Call Progress</p>
-                <div className="space-y-2">
-                  {[
-                    { key: 'initiating', label: 'Call Initiated' },
-                    { key: 'navigating_ivr', label: 'IVR Navigation' },
-                    { key: 'on_hold', label: 'Waiting on Hold' },
-                    { key: 'agent_detected', label: 'Agent Detected' },
-                    ...(aiTask.trim() ? [{ key: 'ai_conversation', label: 'AI Conversation' }] : []),
-                    { key: 'connected', label: 'Customer Connected' },
-                  ].map((step, i) => {
-                    const statusOrder = ['initiating', 'navigating_ivr', 'on_hold', 'agent_detected', ...(aiTask.trim() ? ['ai_conversation'] : []), 'connected', 'completed'];
+                {/* Progress */}
+                <ol className="flex px-7 pt-6">
+                  {progressSteps.map((step, i) => {
                     const currentIdx = statusOrder.indexOf(activeCall.status);
                     const stepIdx = statusOrder.indexOf(step.key);
                     const done = currentIdx > stepIdx;
                     const active = currentIdx === stepIdx;
-
                     return (
-                      <div key={step.key} className="flex items-center gap-3">
-                        <div
-                          className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
+                      <li key={step.key} className="relative flex-1 text-center">
+                        {i > 0 && <span className={`absolute right-1/2 top-3.5 h-0.5 w-full ${done || active ? 'bg-brand' : 'bg-line'}`} />}
+                        <span
+                          className={`relative z-10 mx-auto flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
                             done
-                              ? 'bg-green-600 text-white'
+                              ? 'bg-brand text-white'
                               : active
-                              ? 'bg-blue-600 text-white ring-4 ring-blue-600/30'
-                              : 'bg-gray-800 text-gray-600'
+                              ? 'bg-brand text-white ring-4 ring-brand/20'
+                              : 'bg-sunken text-faint'
                           }`}
                         >
-                          {done ? (
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                            </svg>
-                          ) : (
-                            i + 1
-                          )}
-                        </div>
-                        <span className={`text-sm ${active ? 'text-white font-semibold' : done ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {done ? <Icon name="check" className="h-3.5 w-3.5" strokeWidth={3} /> : i + 1}
+                        </span>
+                        <span className={`mt-2 block text-[11px] ${active ? 'font-semibold text-ink' : done ? 'text-body' : 'text-faint'}`}>
                           {step.label}
                         </span>
-                      </div>
+                      </li>
                     );
                   })}
-                </div>
-              </div>
+                </ol>
 
-              {/* Hold timer */}
-              {['on_hold', 'agent_detected'].includes(activeCall.status) && (
-                <div className="bg-black/20 rounded-xl p-4">
-                  <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Hold Duration</p>
-                  <p className="text-2xl font-mono font-bold text-orange-400">{formatDuration(elapsed)}</p>
-                </div>
-              )}
+                {/* Scrollable middle content */}
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-7 py-6">
+                  {/* Hold timer */}
+                  {['on_hold', 'agent_detected'].includes(activeCall.status) && (
+                    <div className="flex items-center justify-between rounded-2xl bg-warn-soft px-5 py-4">
+                      <div className="flex items-center gap-3 text-warn">
+                        <Icon name="clock" className="h-5 w-5" />
+                        <p className="text-sm font-semibold">Hold duration</p>
+                      </div>
+                      <p className="font-display text-3xl tabular-nums text-warn">{formatDuration(elapsed)}</p>
+                    </div>
+                  )}
 
-              {/* Agent detected alert */}
-              {activeCall.status === 'agent_detected' && (
-                <div className="bg-green-900/50 border border-green-700 rounded-xl p-4">
-                  <p className="text-green-300 font-semibold">A live agent has answered!</p>
-                  <p className="text-green-400/70 text-sm mt-1">
-                    An SMS notification has been sent. Click Connect to bridge the call.
-                  </p>
-                </div>
-              )}
+                  {/* Agent detected alert */}
+                  {activeCall.status === 'agent_detected' && (
+                    <div className="rounded-2xl bg-ok-soft px-5 py-4">
+                      <p className="font-semibold text-ok">A live agent has answered</p>
+                      <p className="mt-1 text-sm text-ok/80">An SMS notification has been sent. Press Transfer to Me to bridge the call.</p>
+                    </div>
+                  )}
 
-              {/* Manual DTMF keypad — visible during IVR navigation and hold */}
-              {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
-                <div className="bg-black/20 rounded-xl p-4 mb-3 space-y-3">
-                  <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Manual Keypad</p>
+                  {/* Manual DTMF keypad — visible during IVR navigation and hold */}
+                  {['navigating_ivr', 'on_hold'].includes(activeCall.status) && (
+                    <div className="rounded-2xl bg-canvas p-5">
+                      <p className="eyebrow mb-3">Manual keypad</p>
 
-                  {/* Live IVR prompt */}
-                  <div className="min-h-[56px] bg-gray-800/60 border border-gray-700/50 rounded-xl px-3 py-2.5">
-                    {latestIvrPrompt ? (
-                      <>
-                        <p className="text-xs text-gray-500 mb-1">IVR said:</p>
-                        <p className="text-sm text-gray-100 leading-snug">{latestIvrPrompt}</p>
-                      </>
-                    ) : (
-                      <p className="text-xs text-gray-600 italic mt-2 text-center">Waiting for IVR prompt...</p>
-                    )}
-                  </div>
+                      {/* Live IVR prompt */}
+                      <div className="min-h-[60px] rounded-xl border border-line bg-surface px-4 py-3">
+                        {latestIvrPrompt ? (
+                          <>
+                            <p className="mb-1 text-xs text-muted">The menu said</p>
+                            <p className="text-sm leading-snug text-ink">{latestIvrPrompt}</p>
+                          </>
+                        ) : (
+                          <p className="mt-2 text-center text-xs italic text-faint">Waiting for the menu prompt…</p>
+                        )}
+                      </div>
 
-                  {/* Digit display */}
-                  <div className="text-center h-7">
-                    {keypadLastDigit && (
-                      <span className="text-xl font-mono font-bold text-blue-300 tracking-widest">{keypadLastDigit}</span>
-                    )}
-                  </div>
+                      {/* Digit display */}
+                      <div className="h-9 pt-1 text-center">
+                        {keypadLastDigit && (
+                          <span className="font-display text-2xl tracking-widest text-brand">{keypadLastDigit}</span>
+                        )}
+                      </div>
 
-                  {/* Key grid */}
-                  <div className="grid grid-cols-3 gap-2">
-                    {['1','2','3','4','5','6','7','8','9','*','0','#'].map((d) => (
-                      <button
-                        key={d}
-                        onClick={() => handleKeypadPress(d)}
-                        disabled={keypadPressing}
-                        className={`py-3 rounded-xl text-sm font-semibold border transition-all active:scale-95 disabled:opacity-50 ${
-                          d === keypadLastDigit
-                            ? 'bg-blue-600 border-blue-500 text-white'
-                            : 'bg-gray-800 border-gray-700 text-gray-200 hover:bg-gray-700 hover:border-gray-600'
-                        }`}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-xs text-gray-600 text-center">Digit plays on call immediately</p>
-                </div>
-              )}
+                      {/* Key grid */}
+                      <div className="mx-auto grid max-w-[260px] grid-cols-3 gap-2.5">
+                        {['1','2','3','4','5','6','7','8','9','*','0','#'].map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => handleKeypadPress(d)}
+                            disabled={keypadPressing}
+                            className={`h-12 rounded-2xl border text-base font-semibold transition active:scale-95 disabled:opacity-50 ${
+                              d === keypadLastDigit
+                                ? 'border-brand bg-brand text-white'
+                                : 'border-line bg-surface text-ink hover:border-brand-line hover:bg-brand-soft'
+                            }`}
+                          >
+                            {d}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-3 text-center text-xs text-muted">Each digit plays on the call immediately.</p>
+                    </div>
+                  )}
 
-              {/* AI Conversation Panel */}
-              {activeCall.status === 'ai_conversation' && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                    <p className="text-xs font-semibold text-purple-400 uppercase tracking-wider">AI Handling Conversation</p>
-                  </div>
+                  {/* AI Conversation Panel */}
+                  {activeCall.status === 'ai_conversation' && (
+                    <div className="space-y-3.5">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-ai" />
+                        <p className="eyebrow !text-ai">AI is handling the conversation</p>
+                      </div>
 
-                  {/* Chat messages */}
-                  <div className="bg-black/20 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-2">
-                    {convMessages.length === 0 ? (
-                      <p className="text-gray-600 text-xs text-center mt-6">Waiting for cruise agent to speak...</p>
-                    ) : (
-                      convMessages.map((msg) => (
-                        <div key={msg.id} className={`flex flex-col ${msg.speaker === 'us' ? 'items-end' : 'items-start'}`}>
-                          <span className="text-xs text-gray-600 mb-0.5">
-                            {msg.speaker === 'us' ? 'AI / You' : 'Cruise Agent'} ·{' '}
-                            {new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                          </span>
-                          <div className={`max-w-xs px-3 py-2 rounded-xl text-xs leading-relaxed ${
-                            msg.speaker === 'us'
-                              ? 'bg-purple-700/60 text-purple-100 rounded-tr-none'
-                              : 'bg-gray-700/60 text-gray-200 rounded-tl-none'
-                          }`}>
-                            {msg.text}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                    <div ref={convEndRef} />
-                  </div>
+                      {/* Chat messages */}
+                      <div className="flex h-60 flex-col gap-3 overflow-y-auto rounded-2xl bg-canvas p-4">
+                        {convMessages.length === 0 ? (
+                          <p className="mt-8 text-center text-xs text-muted">Waiting for the cruise agent to speak…</p>
+                        ) : (
+                          convMessages.map((msg) => (
+                            <div key={msg.id} className={`flex flex-col ${msg.speaker === 'us' ? 'items-end' : 'items-start'}`}>
+                              <span className="mb-1 text-[11px] text-faint">
+                                {msg.speaker === 'us' ? 'AI / You' : 'Cruise agent'} ·{' '}
+                                {new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                              <div
+                                className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ${
+                                  msg.speaker === 'us' ? 'rounded-tr-md bg-ai text-white' : 'rounded-tl-md border border-line bg-surface text-ink'
+                                }`}
+                              >
+                                {msg.text}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                        <div ref={convEndRef} />
+                      </div>
 
-                  {/* Manual text input */}
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="Type a message to speak..."
-                      value={convInput}
-                      onChange={(e) => setConvInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleConvSpeak()}
-                      disabled={convSending}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
-                    />
-                    <button
-                      onClick={handleConvSpeak}
-                      disabled={!convInput.trim() || convSending}
-                      className="bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
-                    >
-                      Send
-                    </button>
-                  </div>
+                      {/* Manual text input */}
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Type a message to speak…"
+                          value={convInput}
+                          onChange={(e) => setConvInput(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleConvSpeak()}
+                          disabled={convSending}
+                          className="input"
+                        />
+                        <button onClick={handleConvSpeak} disabled={!convInput.trim() || convSending} className="btn btn-ai flex-shrink-0">
+                          Send
+                        </button>
+                      </div>
 
-                  {/* Action buttons */}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleAiRespond}
-                      disabled={convAiLoading}
-                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                    >
-                      {convAiLoading ? 'AI thinking...' : 'Let AI Handle'}
-                    </button>
-                    <button
-                      onClick={handleTransfer}
-                      className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                    >
-                      Transfer to Me
-                    </button>
-                    <button
-                      onClick={handleEndCall}
-                      className="flex-1 bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-2.5 rounded-xl text-sm transition-colors"
-                    >
-                      End Call
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              </div> {/* end scrollable content */}
-
-              {/* Action buttons — pinned at bottom, always visible */}
-              {activeCall.status !== 'ai_conversation' && isLiveStatus && (
-              <div className="space-y-2 mt-3 flex-shrink-0">
-                {!['connected', 'transferring'].includes(activeCall.status) && (
-                  <button
-                    onClick={handleTransfer}
-                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
-                    Transfer to Me
-                  </button>
-                )}
-                {!['connected'].includes(activeCall.status) && (
-                  <button
-                    onClick={handleEndCall}
-                    className="w-full bg-red-900/50 hover:bg-red-900 border border-red-700 text-red-300 font-semibold py-3 rounded-xl transition-colors"
-                  >
-                    End Call
-                  </button>
-                )}
-              </div>
-              )}
-            </div>
-          ) : (
-            <div className="h-full flex items-center justify-center">
-              <div className="text-center">
-                <div className="w-20 h-20 rounded-full bg-gray-900 border border-gray-800 flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-10 h-10 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                  </svg>
-                </div>
-                <p className="text-gray-500 font-medium">No active call</p>
-                <p className="text-gray-600 text-sm mt-1">Select a cruise line and press Place Call</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Live event log */}
-        <div className="w-80 flex-shrink-0 bg-gray-900 border border-gray-800 rounded-2xl flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-800 flex items-center gap-2">
-            {activeCall && isLiveStatus && (
-              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            )}
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Live Logs</p>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1.5 font-mono text-xs">
-            {events.length === 0 ? (
-              <p className="text-gray-600 text-center mt-8">No events yet</p>
-            ) : (
-              events.map((ev) => {
-                const time = new Date(ev.created_at).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-                // Transcript — show as speech bubble
-                if (ev.event_type === 'transcript') {
-                  const text = (ev.details as Record<string, string>).text ?? '';
-                  return (
-                    <div key={ev.id} className="mb-2">
-                      <div className="text-gray-600 text-xs mb-0.5">{time} · cruise line</div>
-                      <div className="bg-gray-800 rounded-xl rounded-tl-none px-3 py-2 text-gray-200 text-xs leading-relaxed">
-                        {text}
+                      {/* Action buttons */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <button onClick={handleAiRespond} disabled={convAiLoading} className="btn btn-ai">
+                          {convAiLoading ? 'AI thinking…' : 'Let AI handle'}
+                        </button>
+                        <button onClick={handleTransfer} className="btn btn-ok">Transfer to me</button>
+                        <button onClick={handleEndCall} className="btn btn-danger">End call</button>
                       </div>
                     </div>
-                  );
-                }
+                  )}
+                </div>
 
-                if (ev.event_type === 'twilio_status') return null;
-
-                // IVR step events
-                const stepMatch = ev.event_type.match(/^ivr_step_(\d+)$/);
-                if (stepMatch) {
-                  const d = ev.details as Record<string, Record<string, string>>;
-                  const desc = d?.step?.description ?? `Step ${stepMatch[1]}`;
-                  const type = d?.step?.type ?? '';
-                  const typeIcon: Record<string, string> = { wait: '⏱', dtmf: '🔢', voice: '🗣', hold: '⏳' };
-                  return (
-                    <div key={ev.id} className="flex gap-2 items-start text-xs text-blue-400">
-                      <span className="flex-shrink-0 text-gray-600">{time}</span>
-                      <span>{typeIcon[type] ?? '▸'} {desc}</span>
-                    </div>
-                  );
-                }
-
-                // AI action events
-                if (ev.event_type === 'ai_action') {
-                  const d = ev.details as Record<string, string>;
-                  const label = d.action === 'PRESS'
-                    ? `Pressed ${d.digit}`
-                    : d.action === 'SAY'
-                    ? `Said: "${d.phrase}"`
-                    : d.action ?? 'action';
-                  return (
-                    <div key={ev.id} className="flex gap-2 items-start text-xs text-purple-400">
-                      <span className="flex-shrink-0 text-gray-600">{time}</span>
-                      <span>▸ {label}</span>
-                    </div>
-                  );
-                }
-
-                const icons: Record<string, string> = {
-                  call_initiated: '📞',
-                  entered_hold: '⏳',
-                  agent_detected: '🟢',
-                  transfer_initiated: '🔀',
-                  call_ended_by_user: '🔴',
-                  voicemail_detected: '📬',
-                  max_duration_exceeded: '⏰',
-                };
-                const colors: Record<string, string> = {
-                  call_initiated: 'text-blue-400',
-                  entered_hold: 'text-orange-400',
-                  agent_detected: 'text-green-400',
-                  transfer_initiated: 'text-cyan-400',
-                  voicemail_detected: 'text-yellow-500',
-                  max_duration_exceeded: 'text-red-400',
-                };
-
-                return (
-                  <div key={ev.id} className={`flex gap-2 items-start text-xs ${colors[ev.event_type] ?? 'text-gray-500'}`}>
-                    <span className="flex-shrink-0 text-gray-600">{time}</span>
-                    <span>{icons[ev.event_type] ?? '▸'} {ev.event_type.replace(/_/g, ' ')}</span>
+                {/* Action buttons — pinned at bottom, always visible */}
+                {activeCall.status !== 'ai_conversation' && isLiveStatus && (
+                  <div className="flex gap-3 border-t border-line bg-surface p-5">
+                    {!['connected', 'transferring'].includes(activeCall.status) && (
+                      <button onClick={handleTransfer} className="btn btn-ok flex-1 py-3">
+                        <Icon name="user" className="h-4 w-4" />
+                        Transfer to me
+                      </button>
+                    )}
+                    {!['connected'].includes(activeCall.status) && (
+                      <button onClick={handleEndCall} className="btn btn-danger flex-1 py-3">End call</button>
+                    )}
                   </div>
-                );
-              })
+                )}
+              </section>
+            ) : (
+              <section className="card flex min-h-[420px] items-center justify-center">
+                <EmptyState icon="phone" title="No active call" hint="Choose a cruise line on the left, then press Place call." />
+              </section>
             )}
-            <div ref={logsEndRef} />
           </div>
+
+          {/* ── Live event log ── */}
+          <section className="card flex max-h-[560px] min-h-64 flex-col overflow-hidden lg:col-start-2 wide:col-start-3 wide:row-start-1">
+            <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5">
+              {activeCall && isLiveStatus && <LiveDot />}
+              <p className="eyebrow">Live logs</p>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto p-4 text-xs">
+              {events.length === 0 ? (
+                <p className="mt-8 text-center text-faint">No events yet</p>
+              ) : (
+                events.map((ev) => {
+                  const time = new Date(ev.created_at).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                  // Transcript — show as speech bubble
+                  if (ev.event_type === 'transcript') {
+                    const text = (ev.details as Record<string, string>).text ?? '';
+                    return (
+                      <div key={ev.id} className="pt-1">
+                        <div className="mb-1 font-mono text-[11px] text-faint">{time} · cruise line</div>
+                        <div className="rounded-xl rounded-tl-md bg-canvas px-3 py-2 text-[13px] leading-relaxed text-ink">{text}</div>
+                      </div>
+                    );
+                  }
+
+                  if (ev.event_type === 'twilio_status') return null;
+
+                  let label: string;
+                  let dot: Tone = 'neutral';
+
+                  // IVR step events
+                  const stepMatch = ev.event_type.match(/^ivr_step_(\d+)$/);
+                  if (stepMatch) {
+                    const d = ev.details as Record<string, Record<string, string>>;
+                    label = d?.step?.description ?? `Step ${stepMatch[1]}`;
+                    dot = 'info';
+                  } else if (ev.event_type === 'ai_action') {
+                    // AI action events
+                    const d = ev.details as Record<string, string>;
+                    label = d.action === 'PRESS'
+                      ? `Pressed ${d.digit}`
+                      : d.action === 'SAY'
+                      ? `Said: "${d.phrase}"`
+                      : d.action ?? 'action';
+                    dot = 'ai';
+                  } else {
+                    label = EVENT_LABEL[ev.event_type] ?? ev.event_type.replace(/_/g, ' ');
+                    dot = EVENT_TONE[ev.event_type] ?? 'neutral';
+                  }
+
+                  return (
+                    <div key={ev.id} className="flex items-start gap-2.5 py-0.5">
+                      <span className="w-[52px] flex-shrink-0 pt-px font-mono text-[11px] text-faint">{time}</span>
+                      <span className={`mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full ${DOT_BG[dot]}`} />
+                      <span className="text-[13px] first-letter:uppercase text-body">{label}</span>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          </section>
         </div>
       </div>
     </div>
