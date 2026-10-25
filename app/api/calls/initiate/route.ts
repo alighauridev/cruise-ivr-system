@@ -21,11 +21,7 @@ async function initiateCall(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { leadId, transferNumber, ivrConfigId, aiTask, aiTaskDetails } = await req.json();
-
-  // Agency IATA/CLIA number saved in Settings — used unless the task form overrides it.
-  const agencyRows = await sql`SELECT value FROM settings WHERE user_id = ${ctx.effectiveUserId} AND key = 'agency_id' LIMIT 1`;
-  const defaultAgencyId = (agencyRows[0]?.value as string | undefined)?.trim() || undefined;
+  const { leadId, transferNumber, ivrConfigId, aiTask, aiTaskDetails, agencyId } = await req.json();
 
   // Structured AI task form (preferred) — trim strings, drop unknown keys.
   let taskDetails: AiTaskDetails | null = null;
@@ -41,7 +37,7 @@ async function initiateCall(req: NextRequest) {
         request,
         requestType: rt && rt in REQUEST_TYPES ? (rt as AiTaskDetails['requestType']) : undefined,
         bookingNumber: pick('bookingNumber'),
-        agencyId: pick('agencyId') ?? defaultAgencyId,
+        agencyId: pick('agencyId'),
         guestName: pick('guestName'),
         guestDob: pick('guestDob'),
         shipAndSailDate: pick('shipAndSailDate'),
@@ -71,6 +67,16 @@ async function initiateCall(req: NextRequest) {
   }
 
   const lead = leads[0];
+
+  // Remember the agency ID for this cruise line so it's pre-filled on the next call.
+  const agencyIdToSave = taskDetails?.agencyId ?? (typeof agencyId === 'string' ? agencyId.trim().slice(0, 1000) : '');
+  if (agencyIdToSave) {
+    await sql`
+      INSERT INTO settings (user_id, key, value)
+      VALUES (${ownerId}, ${'agency_id:' + leadId}, ${agencyIdToSave})
+      ON CONFLICT (user_id, key) DO UPDATE SET value = ${agencyIdToSave}, updated_at = NOW()
+    `;
+  }
 
   // If a specific IVR config was selected, fetch its steps
   let ivrSteps = lead.steps;

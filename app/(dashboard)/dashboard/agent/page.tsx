@@ -11,6 +11,7 @@ interface Lead {
   category: string;
   directory_name: string;
   ivr_config_id: string | null;
+  agency_id?: string;
   owner_name?: string;
   user_id?: string;
 }
@@ -99,7 +100,6 @@ const AI_TEXT_FIELDS: Array<{ key: keyof AiTaskForm; label: string }> = [
   { key: 'guestName', label: 'Lead guest name' },
   { key: 'guestDob', label: 'Guest DOB (MM/DD/YYYY)' },
   { key: 'shipAndSailDate', label: 'Ship & sail date' },
-  { key: 'agencyId', label: 'Agency IATA/CLIA #' },
   { key: 'agentName', label: 'Calling for (your name)' },
 ];
 
@@ -151,18 +151,39 @@ export default function AgentPage() {
   const aiTask = aiForm.request;
   const setAiField = (k: keyof AiTaskForm, v: string) => {
     setAiForm((f) => ({ ...f, [k]: v }));
-    // Remember who's calling and the agency ID between calls (this browser only).
-    if (k === 'agencyId' || k === 'agentName') {
-      try { localStorage.setItem(`cruisepro.${k}`, v); } catch {}
+    // Remember who's calling between calls (this browser only). The agency ID is saved per cruise line on the server.
+    if (k === 'agentName') {
+      try { localStorage.setItem('cruisepro.agentName', v); } catch {}
     }
   };
   useEffect(() => {
     try {
-      const agencyId = localStorage.getItem('cruisepro.agencyId') ?? '';
       const agentName = localStorage.getItem('cruisepro.agentName') ?? '';
-      if (agencyId || agentName) setAiForm((f) => ({ ...f, agencyId, agentName }));
+      if (agentName) setAiForm((f) => ({ ...f, agentName }));
     } catch {}
   }, []);
+  // Agency ID is saved per cruise line as you type (debounced).
+  const [agencySave, setAgencySave] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const agencyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function changeAgencyId(leadId: string, value: string) {
+    setAiForm((f) => ({ ...f, agencyId: value }));
+    setLeads((ls) => ls.map((l) => (l.id === leadId ? { ...l, agency_id: value.trim() } : l)));
+    setSelectedLead((l) => (l && l.id === leadId ? { ...l, agency_id: value.trim() } : l));
+    setAgencySave('saving');
+    if (agencyTimer.current) clearTimeout(agencyTimer.current);
+    agencyTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/leads/agency-id', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leadId, agencyId: value }),
+        });
+        setAgencySave(res.ok ? 'saved' : 'error');
+      } catch {
+        setAgencySave('error');
+      }
+    }, 600);
+  }
   const [search, setSearch] = useState('');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
@@ -312,6 +333,9 @@ export default function AgentPage() {
 
   function handleSelectLead(lead: Lead) {
     setSelectedLead(lead);
+    // Each cruise line has its own agency ID — load the one saved for this line.
+    setAiForm((f) => ({ ...f, agencyId: lead.agency_id ?? '' }));
+    setAgencySave('idle');
     // Auto-select the lead's IVR config if it has one
     setSelectedIvrConfigId(lead.ivr_config_id ?? '');
   }
@@ -335,6 +359,7 @@ export default function AgentPage() {
         ivrConfigId: selectedIvrConfigId || undefined,
         transferNumber: selectedTransferNumber?.phone,
         aiTaskDetails: aiTask.trim() ? aiForm : undefined,
+        agencyId: aiForm.agencyId.trim() || undefined,
       }),
     });
 
@@ -462,8 +487,8 @@ export default function AgentPage() {
         actions={activeCall ? <StatusBadge status={activeCall.status} /> : undefined}
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-10 max-lg:px-6">
-        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:grid-rows-[auto_1fr] wide:grid-cols-[340px_minmax(0,1fr)_320px] wide:items-stretch">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-10 max-lg:px-3">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(420px,560px)_minmax(0,1fr)] lg:grid-rows-[auto_1fr] wide:grid-cols-[560px_minmax(0,1fr)_300px] wide:items-stretch">
           {/* ── Left: choose + configure ── */}
           <div className="space-y-4 lg:row-span-2 wide:row-span-1">
             <section className="card overflow-hidden">
@@ -499,6 +524,10 @@ export default function AgentPage() {
                           <div className="min-w-0">
                             <p className={`truncate text-sm font-semibold ${selected ? 'text-brand-strong' : 'text-ink'}`}>{lead.name}</p>
                             <p className="mt-0.5 font-mono text-xs text-muted">{lead.phone_number}</p>
+                            <p className={`mt-0.5 flex items-center gap-1 text-xs ${lead.agency_id ? 'text-ok' : 'text-faint'}`}>
+                              <Icon name="shield" className="h-3.5 w-3.5" />
+                              {lead.agency_id ? `Agency ID: ${lead.agency_id}` : 'No agency ID'}
+                            </p>
                           </div>
                           <div className="flex flex-shrink-0 flex-col items-end gap-1">
                             {lead.category && <Badge tone="info">{lead.category}</Badge>}
@@ -514,9 +543,9 @@ export default function AgentPage() {
             </section>
 
             {selectedLead && !isLiveStatus && (
-              <section className="card rise space-y-4 p-5">
+              <section className="card rise space-y-3 p-3">
                 <div>
-                  <p className="eyebrow mb-3">2 · Call setup</p>
+                  <p className="eyebrow mb-2">2 · Call setup</p>
                   <div className="flex items-center gap-3 rounded-xl bg-canvas p-3">
                     <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-brand-soft font-display text-lg text-brand-strong">
                       {selectedLead.name.charAt(0).toUpperCase()}
@@ -526,6 +555,26 @@ export default function AgentPage() {
                       <p className="font-mono text-xs text-muted">{selectedLead.phone_number}</p>
                     </div>
                   </div>
+                </div>
+
+                {/* Agency ID — each cruise line has its own; saved per line when the call is placed */}
+                <div>
+                  <label className="field-label flex items-center gap-1.5">
+                    <Icon name="shield" className="h-4 w-4 text-brand-strong" />
+                    Agency ID (IATA / CLIA) for {selectedLead.name}
+                  </label>
+                  <input
+                    value={aiForm.agencyId}
+                    onChange={(e) => changeAgencyId(selectedLead.id, e.target.value)}
+                    placeholder="Type it once — saved for this cruise line"
+                    className="input"
+                  />
+                  <p className={`mt-1 text-xs ${agencySave === 'error' ? 'text-bad' : agencySave === 'saved' ? 'text-ok' : 'text-muted'}`}>
+                    {agencySave === 'saving' ? 'Saving…'
+                      : agencySave === 'error' ? 'Could not save — try again'
+                      : aiForm.agencyId.trim() ? '✓ Saved for ' + selectedLead.name
+                      : 'Not set for ' + selectedLead.name}
+                  </p>
                 </div>
 
                 {/* IVR Config selector — configs are already scoped to the current (effective) user */}
@@ -554,7 +603,7 @@ export default function AgentPage() {
                 )}
 
                 {/* AI Task form */}
-                <div className="space-y-2.5 rounded-2xl border border-ai/15 bg-ai-soft/50 p-4">
+                <div className="space-y-2 rounded-2xl border border-ai/15 bg-ai-soft/50 p-2.5">
                   <div className="flex items-center justify-between">
                     <p className="flex items-center gap-2 text-sm font-semibold text-ink">
                       <Icon name="spark" className="h-4 w-4 text-ai" />
@@ -566,11 +615,11 @@ export default function AgentPage() {
                     {AI_REQUEST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                   <textarea
-                    rows={7}
+                    rows={12}
                     placeholder='Exact request, e.g. "Add guest to the waitlist for the Denali tundra tour on Aug 12"'
                     value={aiForm.request}
                     onChange={(e) => setAiField('request', e.target.value)}
-                    className="input min-h-[180px] !resize-y text-[15px]"
+                    className="input min-h-[300px] !resize-y text-base"
                   />
                   {aiTask.trim() && (
                     <>
@@ -586,11 +635,11 @@ export default function AgentPage() {
                         ))}
                       </div>
                       <textarea
-                        rows={2}
+                        rows={4}
                         placeholder='What the AI may agree to, e.g. "Any waitlist position; nothing that changes price"'
                         value={aiForm.mayAgreeTo}
                         onChange={(e) => setAiField('mayAgreeTo', e.target.value)}
-                        className="input"
+                        className="input min-h-[110px] !resize-y"
                       />
                       {!aiForm.bookingNumber.trim() && aiForm.requestType !== 'question' && (
                         <p className="text-xs text-warn">Most reps will ask for the booking number.</p>

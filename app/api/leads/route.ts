@@ -44,7 +44,12 @@ export async function GET(req: NextRequest) {
     `;
   }
 
-  return NextResponse.json({ leads: rows, isAdmin: ctx.isAdmin, impersonating: ctx.impersonating });
+  // Attach the agency ID last used for each cruise line (saved when an AI call is placed).
+  const saved = await sql`SELECT key, value FROM settings WHERE user_id = ${userId} AND key LIKE 'agency_id:%'`;
+  const agencyIds = new Map(saved.map((r) => [(r.key as string).slice('agency_id:'.length), r.value as string]));
+  const leads = rows.map((l) => ({ ...l, agency_id: agencyIds.get(l.id as string) ?? '' }));
+
+  return NextResponse.json({ leads, isAdmin: ctx.isAdmin, impersonating: ctx.impersonating });
 }
 
 export async function POST(req: NextRequest) {

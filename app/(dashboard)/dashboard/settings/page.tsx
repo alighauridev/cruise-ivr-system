@@ -32,7 +32,6 @@ export default function SettingsPage() {
     notification_phone: '',
     auto_callback_enabled: false,
     ai_engine: 'claude',
-    agency_id: '',
     connect_message: '',
   });
   const [transferNumbers, setTransferNumbers] = useState<TransferNumber[]>([]);
@@ -50,7 +49,6 @@ export default function SettingsPage() {
           notification_phone: d.user?.notification_phone ?? '',
           auto_callback_enabled: d.settings?.auto_callback_enabled === 'true',
           ai_engine: d.settings?.ai_engine === 'openai' ? 'openai' : 'claude',
-          agency_id: d.settings?.agency_id ?? '',
           connect_message: d.user?.connect_message ?? '',
         });
         // Load transfer_numbers; fall back to legacy transfer_phone
@@ -101,7 +99,7 @@ export default function SettingsPage() {
         notification_phone: form.notification_phone,
         transfer_numbers: nums,
         connect_message: form.connect_message || null,
-        settings: { auto_callback_enabled: form.auto_callback_enabled ? 'true' : 'false', ai_engine: form.ai_engine, agency_id: form.agency_id.trim() },
+        settings: { auto_callback_enabled: form.auto_callback_enabled ? 'true' : 'false', ai_engine: form.ai_engine },
       }),
     });
   }
@@ -122,7 +120,6 @@ export default function SettingsPage() {
         settings: {
           auto_callback_enabled: form.auto_callback_enabled ? 'true' : 'false',
           ai_engine: form.ai_engine,
-          agency_id: form.agency_id.trim(),
         },
       }),
     });
@@ -254,16 +251,6 @@ export default function SettingsPage() {
                   { value: 'openai', label: 'OpenAI Realtime', hint: 'Previous setup, faster replies' },
                 ]}
               />
-              <div className="mt-5">
-                <label className="field-label">Agency ID (IATA / CLIA #)</label>
-                <input
-                  value={form.agency_id}
-                  onChange={(e) => setForm((f) => ({ ...f, agency_id: e.target.value }))}
-                  placeholder="e.g. 12345678"
-                  className="input"
-                />
-                <p className="mt-2 text-xs text-muted">Given to the cruise line rep on every AI call. You can still override it per call.</p>
-              </div>
             </SectionCard>
 
             {/* Notifications & Auto-callback */}
