@@ -57,7 +57,7 @@ the Realtime engine in `server/media-ws.ts`.
    (The call-initiate API writes `ai_task_details`; without the column every call fails.)
 2. For the Claude engine, add `ANTHROPIC_API_KEY` on Render (see the section above).
    Optional env vars on Render: `AGENCY_NAME` (default "Military Cruise Deals"),
-   `OPENAI_REALTIME_MODEL` (default `gpt-4o-realtime-preview`),
+   `OPENAI_REALTIME_MODEL` (default `gpt-realtime`),
    `NOTIFICATION_SMS_ENABLED=true` for summary texts.
 3. Merge to `master` (Render auto-deploys on commit).
 4. Test: AI task call to a team member's phone acting as the rep, Transfer To = Mitch's

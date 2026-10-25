@@ -1138,7 +1138,7 @@ function startClaudeVoice(state: SessionState): void {
 
 // ─── OpenAI Realtime API ─────────────────────────────────────────────────────
 
-const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-4o-realtime-preview';
+const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime';
 /** If the goodbye/handoff audio never reports finished, act anyway after this long. */
 const FINISH_FALLBACK_MS = 8_000;
 
@@ -1161,10 +1161,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
   console.log(`[OpenAI RT] Connecting callId=${state.callId}`);
 
   const rtWs = new WebSocket(`wss://api.openai.com/v1/realtime?model=${RT_MODEL}`, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'OpenAI-Beta': 'realtime=v1',
-    },
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, // GA API: no beta header
     handshakeTimeout: 10_000,
   });
   state.openaiRtWs = rtWs;
@@ -1177,21 +1174,24 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
     rtWs.send(JSON.stringify({
       type: 'session.update',
       session: {
-        modalities: ['text', 'audio'],
+        type: 'realtime',
         instructions: buildAgentInstructions(task),
-        voice: 'coral',
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        input_audio_transcription: { model: 'whisper-1' },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.65,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 900,
+        output_modalities: ['audio'],
+        audio: {
+          input: {
+            format: { type: 'audio/pcmu' }, // g711 µ-law passthrough from Twilio
+            transcription: { model: 'whisper-1' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.65,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 900,
+            },
+          },
+          output: { format: { type: 'audio/pcmu' }, voice: 'coral' },
         },
         tools: AGENT_TOOLS,
         tool_choice: 'auto',
-        temperature: 0.7,
       },
     }));
 
@@ -1199,7 +1199,9 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
       // Opening line. The Twilio stream is already open and bidirectional.
       rtWs.send(JSON.stringify({
         type: 'response.create',
-        response: { instructions: buildOpeningInstruction(task) },
+        // response.instructions REPLACES the session prompt for this reply, so include the full
+        // prompt (facts + request) or the AI invents a booking number and request.
+        response: { instructions: `${buildAgentInstructions(task)}\n\n${buildOpeningInstruction(task)}` },
       }));
     } else {
       // Reconnected mid-conversation — replay history so OpenAI has context.
@@ -1209,7 +1211,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
           item: {
             type: 'message',
             role: turn.speaker === 'us' ? 'assistant' : 'user',
-            content: [{ type: turn.speaker === 'us' ? 'text' : 'input_text', text: turn.text }],
+            content: [{ type: turn.speaker === 'us' ? 'output_text' : 'input_text', text: turn.text }],
           },
         }));
       }
@@ -1245,14 +1247,17 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
           }
           break;
 
+        case 'response.output_audio.delta':
         case 'response.audio.delta':
           sendToTwilio(state, { event: 'media', media: { payload: event.delta } }); // base64 g711_ulaw
           break;
 
+        case 'response.output_audio_transcript.delta':
         case 'response.audio_transcript.delta':
           state.aiResponseBuffer += event.delta ?? '';
           break;
 
+        case 'response.output_audio_transcript.done':
         case 'response.audio_transcript.done': {
           const text = state.aiResponseBuffer.trim();
           state.aiResponseBuffer = '';
@@ -1287,7 +1292,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
         }
 
         case 'response.output_item.done': {
-          // Beta realtime: the tool name is only on the finished output item.
+          // Realtime: the tool name is only on the finished output item.
           const item = event.item;
           if (item?.type !== 'function_call') break;
           let args: Record<string, string> = {};
@@ -1346,7 +1351,7 @@ async function scheduleFinish(state: SessionState, action: () => Promise<void>):
   state.aiFinishing = true;
   // Stop the AI from auto-replying if the rep talks during the goodbye.
   try {
-    state.openaiRtWs?.send(JSON.stringify({ type: 'session.update', session: { turn_detection: null } }));
+    state.openaiRtWs?.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: { turn_detection: null } } } }));
   } catch {}
   state.pendingFinishAction = action;
   const mark = `ai-finish-${Date.now()}`;
