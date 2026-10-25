@@ -57,9 +57,6 @@ export default function Sidebar({ user, isAdmin, realUserId, actingAsId }: Sideb
         {navItems.map((item) => (
           <NavLink key={item.href} {...item} active={pathname === item.href || pathname.startsWith(item.href + '/')} />
         ))}
-
-        <p className="eyebrow mb-2 mt-7 px-3 !text-white/50 max-lg:hidden">Preview</p>
-        <NavLink href="/client-preview" label="Client build" icon="spark" active={pathname.startsWith('/client-preview')} />
       </nav>
 
       {/* User footer */}
