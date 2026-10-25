@@ -95,14 +95,6 @@ const AI_REQUEST_TYPES = [
   { value: 'other', label: 'Other' },
 ];
 
-const AI_TEXT_FIELDS: Array<{ key: keyof AiTaskForm; label: string }> = [
-  { key: 'bookingNumber', label: 'Booking #' },
-  { key: 'guestName', label: 'Lead guest name' },
-  { key: 'guestDob', label: 'Guest DOB (MM/DD/YYYY)' },
-  { key: 'shipAndSailDate', label: 'Ship & sail date' },
-  { key: 'agentName', label: 'Calling for (your name)' },
-];
-
 
 const TONE_TEXT: Record<Tone, string> = {
   neutral: 'text-body', brand: 'text-brand-strong', ok: 'text-ok', warn: 'text-warn', bad: 'text-bad', info: 'text-info', ai: 'text-ai',
@@ -614,6 +606,7 @@ export default function AgentPage() {
                   <select value={aiForm.requestType} onChange={(e) => setAiField('requestType', e.target.value)} className="input">
                     {AI_REQUEST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
+                  <label className="field-label !mb-0 pt-1">1 · What should the AI ask for?</label>
                   <textarea
                     rows={12}
                     placeholder='Exact request, e.g. "Add guest to the waitlist for the Denali tundra tour on Aug 12"'
@@ -621,31 +614,6 @@ export default function AgentPage() {
                     onChange={(e) => setAiField('request', e.target.value)}
                     className="input min-h-[300px] !resize-y text-base"
                   />
-                  {aiTask.trim() && (
-                    <>
-                      <div className="grid grid-cols-2 gap-2">
-                        {AI_TEXT_FIELDS.map((f) => (
-                          <input
-                            key={f.key}
-                            placeholder={f.label}
-                            value={aiForm[f.key]}
-                            onChange={(e) => setAiField(f.key, e.target.value)}
-                            className="input input-sm"
-                          />
-                        ))}
-                      </div>
-                      <textarea
-                        rows={4}
-                        placeholder='What the AI may agree to, e.g. "Any waitlist position; nothing that changes price"'
-                        value={aiForm.mayAgreeTo}
-                        onChange={(e) => setAiField('mayAgreeTo', e.target.value)}
-                        className="input min-h-[110px] !resize-y"
-                      />
-                      {!aiForm.bookingNumber.trim() && aiForm.requestType !== 'question' && (
-                        <p className="text-xs text-warn">Most reps will ask for the booking number.</p>
-                      )}
-                    </>
-                  )}
                   <p className="text-xs leading-relaxed text-muted">
                     {aiTask.trim()
                       ? 'The AI introduces itself as an AI assistant for the agency, handles the request, hangs up, and texts you a summary. It hands the rep to the Transfer To number for payment, verification it lacks, or if the rep won’t work with an AI. Never enter card numbers here.'
