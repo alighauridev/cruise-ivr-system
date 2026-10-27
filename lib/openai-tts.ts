@@ -58,11 +58,89 @@ export async function generateTTS(text: string): Promise<Buffer> {
 }
 
 /**
- * Stream mulaw 8kHz TTS audio to a callback as soon as PCM chunks arrive from OpenAI.
- * Dramatically reduces time-to-first-audio vs waiting for the full response.
- *
- * Flow: OpenAI TTS stream (PCM 24kHz 16-bit) → downsample to 8kHz → mulaw → onChunk()
- * Also saves the complete mulaw to disk for future cache hits.
+ * Deepgram Aura is the phone voice: it returns 8kHz mulaw directly and starts in ~0.4s.
+ * OpenAI TTS is the fallback — it sometimes took 70s+ to send the first byte, which left
+ * reps in a minute of silence. TTS_PROVIDER=openai makes OpenAI the main voice again.
+ */
+const AURA_VOICE = process.env.TTS_AURA_VOICE ?? 'aura-2-thalia-en';
+const PRIMARY: 'aura' | 'openai' =
+  process.env.TTS_PROVIDER === 'openai' || !process.env.DEEPGRAM_API_KEY ? 'openai' : 'aura';
+/** No audio within this long = that provider is stalled; try the other one. */
+const FIRST_AUDIO_MS = { aura: 3000, openai: 6000 };
+const TOTAL_MS = 30_000;
+
+const mulawCacheKey = (text: string, provider: 'aura' | 'openai') =>
+  provider === 'aura'
+    ? crypto.createHash('sha256').update(`aura|${AURA_VOICE}|${text}`).digest('hex')
+    : cacheKey(text);
+
+/** POST and stream the body, aborting if no audio arrives in firstMs. */
+async function streamBody(
+  url: string,
+  init: RequestInit,
+  firstMs: number,
+  onBytes: (bytes: Buffer) => void
+): Promise<void> {
+  const ctrl = new AbortController();
+  const firstTimer = setTimeout(() => ctrl.abort(new Error(`no audio after ${firstMs}ms`)), firstMs);
+  const totalTimer = setTimeout(() => ctrl.abort(new Error(`not finished after ${TOTAL_MS}ms`)), TOTAL_MS);
+  try {
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      clearTimeout(firstTimer);
+      onBytes(Buffer.from(value));
+    }
+  } finally {
+    clearTimeout(firstTimer);
+    clearTimeout(totalTimer);
+  }
+}
+
+function streamAura(text: string, onMulaw: (mulaw: Buffer) => void): Promise<void> {
+  const params = new URLSearchParams({ model: AURA_VOICE, encoding: 'mulaw', sample_rate: '8000', container: 'none' });
+  return streamBody(
+    `https://api.deepgram.com/v1/speak?${params}`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    },
+    FIRST_AUDIO_MS.aura,
+    onMulaw
+  );
+}
+
+/** OpenAI streams PCM 24kHz 16-bit; downsample to 8kHz and convert to mulaw as it arrives. */
+function streamOpenAI(text: string, onMulaw: (mulaw: Buffer) => void): Promise<void> {
+  let remainder = Buffer.alloc(0); // bytes that don't yet form a full group of 3 samples
+  return streamBody(
+    'https://api.openai.com/v1/audio/speech',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...ttsParams(), input: text, response_format: 'pcm' }),
+    },
+    FIRST_AUDIO_MS.openai,
+    (incoming) => {
+      const combined = Buffer.concat([remainder, incoming]);
+      const usableBytes = Math.floor(combined.byteLength / 6) * 6; // 6 PCM bytes → 1 mulaw byte
+      remainder = combined.subarray(usableBytes);
+      if (usableBytes === 0) return;
+      const samples = new Int16Array(combined.buffer.slice(combined.byteOffset, combined.byteOffset + usableBytes));
+      const mulaw = Buffer.alloc(samples.length / 3);
+      for (let i = 0; i < mulaw.length; i++) mulaw[i] = linearToMulaw(down3(samples, i));
+      onMulaw(mulaw);
+    }
+  );
+}
+
+/**
+ * Stream 8kHz mulaw TTS audio to onChunk in 20ms pieces as soon as it arrives, from the disk
+ * cache when possible. If the main voice fails or stalls before any audio, the other one is used.
  */
 export async function streamTTSMulaw(
   text: string,
@@ -72,130 +150,44 @@ export async function streamTTSMulaw(
     fs.mkdirSync(MULAW_CACHE_DIR, { recursive: true });
   }
 
-  const hash = cacheKey(text);
-  const cachePath = path.join(MULAW_CACHE_DIR, `${hash}.mulaw`);
+  const emit = (mulaw: Buffer) => {
+    for (let i = 0; i < mulaw.length; i += 160) onChunk(mulaw.subarray(i, Math.min(i + 160, mulaw.length)));
+  };
 
-  // Serve from cache in 160-byte chunks (no network round-trip)
+  const cachePath = path.join(MULAW_CACHE_DIR, `${mulawCacheKey(text, PRIMARY)}.mulaw`);
   if (fs.existsSync(cachePath)) {
     console.log(`[TTS] Cache hit (stream) for "${text.substring(0, 40)}..."`);
-    const cached = fs.readFileSync(cachePath);
-    const CHUNK = 160;
-    for (let i = 0; i < cached.length; i += CHUNK) {
-      onChunk(cached.subarray(i, Math.min(i + CHUNK, cached.length)));
-    }
+    emit(fs.readFileSync(cachePath));
     return;
   }
 
-  console.log(`[TTS] Streaming mulaw for "${text.substring(0, 40)}..."`);
-
-  const response = await openai.audio.speech.create({
-    ...ttsParams(),
-    input: text,
-    response_format: 'pcm',
-  });
-
-  // Accumulate PCM for cache, convert+emit mulaw chunks as they arrive
-  const pcmAccum: Buffer[] = [];
-  let remainder = Buffer.alloc(0); // bytes that don't yet form a full group of 3 samples
-  const CHUNK_OUT = 160; // 20ms of mulaw at 8kHz
-
-  // The OpenAI SDK response has a .body ReadableStream in Node 18+
-  const reader = (response as unknown as { body: { getReader(): ReadableStreamDefaultReader<Uint8Array> } }).body.getReader();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    const incoming = Buffer.from(value);
-    pcmAccum.push(incoming);
-    const combined = Buffer.concat([remainder, incoming]);
-
-    // Downsample 24kHz→8kHz: take every 3rd 16-bit sample (6 PCM bytes → 1 mulaw byte)
-    const usableBytes = Math.floor(combined.byteLength / 6) * 6;
-    remainder = combined.subarray(usableBytes);
-    if (usableBytes === 0) continue;
-
-    const samples = new Int16Array(combined.buffer, combined.byteOffset, usableBytes / 2);
-    const mulawCount = Math.floor(samples.length / 3);
-    const mulawChunk = Buffer.alloc(mulawCount);
-    for (let i = 0; i < mulawCount; i++) {
-      mulawChunk[i] = linearToMulaw(down3(samples, i));
-    }
-
-    // Emit in 160-byte pieces so Twilio gets a steady stream
-    for (let i = 0; i < mulawChunk.length; i += CHUNK_OUT) {
-      onChunk(mulawChunk.subarray(i, Math.min(i + CHUNK_OUT, mulawChunk.length)));
+  const providers: Array<'aura' | 'openai'> = PRIMARY === 'aura' ? ['aura', 'openai'] : ['openai'];
+  for (const provider of providers) {
+    const parts: Buffer[] = [];
+    const t0 = Date.now();
+    try {
+      await (provider === 'aura' ? streamAura : streamOpenAI)(text, (mulaw) => {
+        parts.push(mulaw);
+        emit(mulaw);
+      });
+      const full = Buffer.concat(parts);
+      if (provider === PRIMARY) fs.writeFileSync(cachePath, full); // never cache the fallback voice as the main one
+      console.log(`[TTS] ${provider} ${(full.length / 8000).toFixed(1)}s audio in ${Date.now() - t0}ms for "${text.substring(0, 40)}..."`);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Part of the sentence was already played: replaying it in another voice would be worse.
+      if (parts.length > 0 || provider === providers[providers.length - 1]) throw new Error(`${provider} TTS: ${msg}`);
+      console.warn(`[TTS] ${provider} failed after ${Date.now() - t0}ms (${msg}) — trying the fallback voice`);
     }
   }
-
-  // Handle any leftover PCM bytes
-  if (remainder.byteLength >= 2) {
-    const samples = new Int16Array(remainder.buffer, remainder.byteOffset, Math.floor(remainder.byteLength / 2));
-    const mulawCount = Math.floor(samples.length / 3);
-    if (mulawCount > 0) {
-      const mulawChunk = Buffer.alloc(mulawCount);
-      for (let i = 0; i < mulawCount; i++) mulawChunk[i] = linearToMulaw(down3(samples, i));
-      for (let i = 0; i < mulawChunk.length; i += 160) {
-        onChunk(mulawChunk.subarray(i, Math.min(i + 160, mulawChunk.length)));
-      }
-    }
-  }
-
-  // Cache the complete mulaw for future calls
-  const fullPcm = Buffer.concat(pcmAccum);
-  const allSamples = new Int16Array(fullPcm.buffer, fullPcm.byteOffset, Math.floor(fullPcm.byteLength / 2));
-  const sampleCount = Math.floor(allSamples.length / 3);
-  const fullMulaw = Buffer.alloc(sampleCount);
-  for (let i = 0; i < sampleCount; i++) fullMulaw[i] = linearToMulaw(down3(allSamples, i));
-  fs.writeFileSync(cachePath, fullMulaw);
-  console.log(`[TTS] Streamed+cached ${fullMulaw.length} mulaw bytes (${(fullMulaw.length / 8000).toFixed(1)}s) for "${text.substring(0, 40)}..."`);
 }
 
-/**
- * Generate mulaw 8kHz TTS audio suitable for Twilio bidirectional media streams.
- * Returns a Buffer of raw 8-bit mulaw samples at 8000 Hz.
- *
- * Flow: OpenAI TTS (PCM 24kHz 16-bit) → downsample to 8kHz → convert to mulaw
- */
+/** Whole-sentence mulaw 8kHz audio (same voice, fallback and cache as streamTTSMulaw). */
 export async function generateTTSMulaw(text: string): Promise<Buffer> {
-  if (!fs.existsSync(MULAW_CACHE_DIR)) {
-    fs.mkdirSync(MULAW_CACHE_DIR, { recursive: true });
-  }
-
-  const hash = cacheKey(text);
-  const cachePath = path.join(MULAW_CACHE_DIR, `${hash}.mulaw`);
-
-  // Return cached mulaw if available
-  if (fs.existsSync(cachePath)) {
-    console.log(`[TTS] Cache hit for "${text.substring(0, 40)}..."`);
-    return fs.readFileSync(cachePath);
-  }
-
-  console.log(`[TTS] Generating mulaw for "${text.substring(0, 40)}..."`);
-
-  // Get raw PCM from OpenAI: 24kHz, 16-bit signed LE, mono
-  const response = await openai.audio.speech.create({
-    ...ttsParams(),
-    input: text,
-    response_format: 'pcm',
-  });
-  const arrayBuffer = await response.arrayBuffer();
-  const pcm24k = Buffer.from(arrayBuffer);
-
-  // Downsample 24kHz → 8kHz (take every 3rd sample)
-  const samples24k = new Int16Array(pcm24k.buffer, pcm24k.byteOffset, pcm24k.byteLength / 2);
-  const sampleCount8k = Math.floor(samples24k.length / 3);
-  const mulawBuffer = Buffer.alloc(sampleCount8k);
-
-  for (let i = 0; i < sampleCount8k; i++) {
-    mulawBuffer[i] = linearToMulaw(down3(samples24k, i));
-  }
-
-  // Cache for future use
-  fs.writeFileSync(cachePath, mulawBuffer);
-  console.log(`[TTS] Generated ${mulawBuffer.length} mulaw bytes (${(mulawBuffer.length / 8000).toFixed(1)}s)`);
-
-  return mulawBuffer;
+  const parts: Buffer[] = [];
+  await streamTTSMulaw(text, (chunk) => parts.push(chunk));
+  return Buffer.concat(parts);
 }
 
 /**
