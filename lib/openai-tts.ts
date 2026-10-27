@@ -5,6 +5,30 @@ import path from 'path';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * gpt-4o-mini-tts sounds like a person on the phone; tts-1 sounds like a reader.
+ * TTS_MODEL=tts-1 / TTS_VOICE=nova restores the old voice.
+ */
+const TTS_MODEL = process.env.TTS_MODEL ?? 'gpt-4o-mini-tts';
+const TTS_VOICE = process.env.TTS_VOICE ?? 'coral';
+const TTS_INSTRUCTIONS =
+  process.env.TTS_INSTRUCTIONS ??
+  'Friendly, relaxed travel-agency assistant on a phone call with a colleague at a cruise line. ' +
+  'Natural conversational pace and warm tone, like a real person, not a narrator or announcer. ' +
+  'Read letters and numbers in booking codes clearly and a little slower.';
+const ttsParams = () =>
+  TTS_MODEL.startsWith('tts-1')
+    ? { model: TTS_MODEL, voice: TTS_VOICE }
+    : { model: TTS_MODEL, voice: TTS_VOICE, instructions: TTS_INSTRUCTIONS };
+/** Cache key covers the voice, so changing it doesn't replay old audio. */
+const cacheKey = (text: string) =>
+  crypto.createHash('sha256').update(`${TTS_MODEL}|${TTS_VOICE}|${TTS_INSTRUCTIONS}|${text}`).digest('hex');
+
+/** 24kHz → 8kHz: average each group of 3 samples (a simple low-pass) instead of dropping 2 of 3, which aliases into a harsh, tinny voice. */
+function down3(samples: Int16Array, i: number): number {
+  return Math.round((samples[i * 3] + samples[i * 3 + 1] + samples[i * 3 + 2]) / 3);
+}
+
 const CACHE_DIR = path.join(process.cwd(), 'public', 'tts', 'cache');
 const MULAW_CACHE_DIR = path.join(process.cwd(), 'public', 'tts', 'mulaw-cache');
 
@@ -14,7 +38,7 @@ export async function generateTTS(text: string): Promise<Buffer> {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
   }
 
-  const hash = crypto.createHash('sha256').update(text).digest('hex');
+  const hash = cacheKey(text);
   const cachePath = path.join(CACHE_DIR, `${hash}.mp3`);
 
   if (fs.existsSync(cachePath)) {
@@ -22,8 +46,7 @@ export async function generateTTS(text: string): Promise<Buffer> {
   }
 
   const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'nova',
+    ...ttsParams(),
     input: text,
     response_format: 'mp3',
   });
@@ -49,7 +72,7 @@ export async function streamTTSMulaw(
     fs.mkdirSync(MULAW_CACHE_DIR, { recursive: true });
   }
 
-  const hash = crypto.createHash('sha256').update(text).digest('hex');
+  const hash = cacheKey(text);
   const cachePath = path.join(MULAW_CACHE_DIR, `${hash}.mulaw`);
 
   // Serve from cache in 160-byte chunks (no network round-trip)
@@ -66,8 +89,7 @@ export async function streamTTSMulaw(
   console.log(`[TTS] Streaming mulaw for "${text.substring(0, 40)}..."`);
 
   const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'nova',
+    ...ttsParams(),
     input: text,
     response_format: 'pcm',
   });
@@ -97,7 +119,7 @@ export async function streamTTSMulaw(
     const mulawCount = Math.floor(samples.length / 3);
     const mulawChunk = Buffer.alloc(mulawCount);
     for (let i = 0; i < mulawCount; i++) {
-      mulawChunk[i] = linearToMulaw(samples[i * 3]);
+      mulawChunk[i] = linearToMulaw(down3(samples, i));
     }
 
     // Emit in 160-byte pieces so Twilio gets a steady stream
@@ -112,7 +134,7 @@ export async function streamTTSMulaw(
     const mulawCount = Math.floor(samples.length / 3);
     if (mulawCount > 0) {
       const mulawChunk = Buffer.alloc(mulawCount);
-      for (let i = 0; i < mulawCount; i++) mulawChunk[i] = linearToMulaw(samples[i * 3]);
+      for (let i = 0; i < mulawCount; i++) mulawChunk[i] = linearToMulaw(down3(samples, i));
       for (let i = 0; i < mulawChunk.length; i += 160) {
         onChunk(mulawChunk.subarray(i, Math.min(i + 160, mulawChunk.length)));
       }
@@ -124,7 +146,7 @@ export async function streamTTSMulaw(
   const allSamples = new Int16Array(fullPcm.buffer, fullPcm.byteOffset, Math.floor(fullPcm.byteLength / 2));
   const sampleCount = Math.floor(allSamples.length / 3);
   const fullMulaw = Buffer.alloc(sampleCount);
-  for (let i = 0; i < sampleCount; i++) fullMulaw[i] = linearToMulaw(allSamples[i * 3]);
+  for (let i = 0; i < sampleCount; i++) fullMulaw[i] = linearToMulaw(down3(allSamples, i));
   fs.writeFileSync(cachePath, fullMulaw);
   console.log(`[TTS] Streamed+cached ${fullMulaw.length} mulaw bytes (${(fullMulaw.length / 8000).toFixed(1)}s) for "${text.substring(0, 40)}..."`);
 }
@@ -140,7 +162,7 @@ export async function generateTTSMulaw(text: string): Promise<Buffer> {
     fs.mkdirSync(MULAW_CACHE_DIR, { recursive: true });
   }
 
-  const hash = crypto.createHash('sha256').update(text).digest('hex');
+  const hash = cacheKey(text);
   const cachePath = path.join(MULAW_CACHE_DIR, `${hash}.mulaw`);
 
   // Return cached mulaw if available
@@ -153,8 +175,7 @@ export async function generateTTSMulaw(text: string): Promise<Buffer> {
 
   // Get raw PCM from OpenAI: 24kHz, 16-bit signed LE, mono
   const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'nova',
+    ...ttsParams(),
     input: text,
     response_format: 'pcm',
   });
@@ -167,7 +188,7 @@ export async function generateTTSMulaw(text: string): Promise<Buffer> {
   const mulawBuffer = Buffer.alloc(sampleCount8k);
 
   for (let i = 0; i < sampleCount8k; i++) {
-    mulawBuffer[i] = linearToMulaw(samples24k[i * 3]);
+    mulawBuffer[i] = linearToMulaw(down3(samples24k, i));
   }
 
   // Cache for future use

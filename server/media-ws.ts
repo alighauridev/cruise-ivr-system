@@ -54,6 +54,8 @@ interface SessionState {
   isAgentDetected: boolean;
   /** Times a bare "Hello?" was heard recently — a person waiting for us to speak (menus don't repeat it). */
   helloTimes: number[];
+  /** Last few things heard from the line (with time), so the AI knows how the rep greeted us. */
+  recentHeard: Array<{ text: string; at: number }>;
   isTerminated: boolean;
   /**
    * Number of TwiML updates we have dispatched to Twilio that have not yet
@@ -223,6 +225,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             isProcessing: false,
             isAgentDetected: false,
             helloTimes: [],
+            recentHeard: [],
             isTerminated: false,
             pendingRedirects: 0,
             pendingCloses: 0,
@@ -522,6 +525,7 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
 
   state.lastTranscriptAt = Date.now();
   console.log(`[IVR] Said: "${transcript}"`);
+  state.recentHeard = [...state.recentHeard.slice(-5), { text: transcript, at: Date.now() }];
 
   await sql`
     INSERT INTO call_events (call_id, event_type, details)
@@ -550,6 +554,15 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
       await handleAgentDetected(state, transcript);
       return;
     }
+  }
+
+  // 2c. A person introducing themselves or asking who's calling, once we're on hold: that's a
+  // live rep — start right away instead of waiting ~1s on the classifier (which also said NO to
+  // "This is Kevin on a recorded line. To whom do I have the pleasure of speaking?").
+  if (state.ivrExecutor?.isInHoldMode() && looksLikeLiveRep(transcript)) {
+    console.log(`[IVR] Live rep greeting on hold callId=${state.callId}`);
+    await handleAgentDetected(state, transcript);
+    return;
   }
 
   // 3. Agent detection — phrase match as fast pre-filter, then AI confirmation
@@ -842,6 +855,19 @@ export async function pressDigitOnCall(callId: string, digit: string): Promise<{
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** A rep's pick-up line: gives their name, or asks who is calling / how they can help — and is not a menu or ad. */
+const REP_ASKS = /\b(?:to whom|who) (?:do i have|am i speaking|is calling|am i talking)|\bwho do i have the pleasure|\bhow (?:can|may) i (?:help|assist)|\bcan i (?:get|have) (?:your|the) (?:name|booking|reservation)|\bmy name is [a-z]+/i;
+/** "This is Kevin" — a capitalized first name, not "This is Princess Cruises" / "This is a reminder". */
+const REP_NAME = /\b(?:[Tt]his is|[Yy]ou(?:'re| are) speaking (?:with|to)) ([A-Z][a-z]+)\b/;
+const NOT_A_NAME = /^(?:Princess|Carnival|Royal|Celebrity|Norwegian|Holland|Disney|Msc|MSC|Virgin|Cunard|Viking|Oceania|Regent|Seabourn|Silversea|Azamara|Windstar|Crystal|Explora|Atlas|Avalon|American|Business|Club|Your|Our|The|A|An|It|Not|Just|What|Why|How|Medallion|Alaska|Hawaii|Caribbean|Mexico|Europe|Bermuda|Canada|Japan|Australia|Asia|Antarctica|Panama|Greece|Italy|Spain|Iceland|Norway|Florida|Galveston|Seattle|Miami|Sail|Cruise|Vacation|Adventure|Paradise)$/;
+const MENU_WORDS = /\b(?:press|para|option|menu|virtual assistant|automated|survey|estimated wait|your call is important|all (?:agents|representatives) are|please (?:continue to )?hold|visit|www|dot com)\b/i;
+function looksLikeLiveRep(transcript: string): boolean {
+  if (MENU_WORDS.test(transcript)) return false;
+  if (REP_ASKS.test(transcript)) return true;
+  const m = REP_NAME.exec(transcript);
+  return !!m && !NOT_A_NAME.test(m[1]);
+}
+
 /** Only a greeting: "Hello?", "Hi.", "Hello? Hello?", "Can you hear me?". */
 const BARE_GREETING = /^(?:(?:hello|hi|hey|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
 
@@ -1073,9 +1099,14 @@ function startClaudeVoice(state: SessionState): void {
   const task = state.aiTaskDetails;
   if (!task || state.claude) return;
 
+  // What the rep said over the last ~15s (their name / "who am I speaking with?").
+  const since = Date.now() - 15_000;
+  const repGreeting = state.recentHeard.filter((h) => h.at >= since).map((h) => h.text).join(' ');
+
   state.claude = new ClaudeVoiceSession({
     callId: state.callId,
     task,
+    repGreeting,
     isDone: () => state.isTerminated || state.aiFinishing,
     sendAudio: (mulaw) => sendToTwilio(state, { event: 'media', media: { payload: mulaw.toString('base64') } }),
     clearAudio: () => {

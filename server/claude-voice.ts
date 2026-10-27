@@ -72,6 +72,8 @@ function latencyParams(model: string) {
 export interface ClaudeVoiceHost {
   readonly callId: string;
   readonly task: AiTaskDetails;
+  /** What the rep said when they picked up ("This is Kevin, who am I speaking with?"). */
+  readonly repGreeting?: string;
   /** Call is over, or end_call / handoff already started — say and do nothing more. */
   isDone(): boolean;
   sendAudio(mulaw: Buffer): void;
@@ -128,6 +130,19 @@ function cleanForSpeech(raw: string): string {
 
 const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
 
+/**
+ * Things a rep says while listening that mean "keep going", not "stop": "Go ahead", "Okay",
+ * "Mm-hmm", "Hello?". Cutting the AI off on these made it stop mid-sentence every time the
+ * rep acknowledged it, so reps thought nobody was there.
+ */
+const BACKCHANNEL =
+  /^(?:(?:ok(?:ay)?|alright|all right|go ahead|yes|yeah|yep|sure|right|uh[- ]?huh|mm[- ]?hmm|mhm|hmm|um|uh|got it|i see|hello|hi|sorry|one (?:moment|second|sec)|thank you|thanks|please|perfect|great|good|of course|no problem)[\s.,?!]*)+$/i;
+const isBackchannel = (s: string) => BACKCHANNEL.test(s.trim());
+
+/** Barge-in only on real speech: an interim of 5+ words, or a final of 3+ words that isn't a backchannel. */
+const BARGE_INTERIM_WORDS = 5;
+const BARGE_FINAL_WORDS = 3;
+
 export class ClaudeVoiceSession {
   private readonly system: string;
   private messages: Anthropic.MessageParam[] = [];
@@ -137,6 +152,7 @@ export class ClaudeVoiceSession {
   private dgTimer: ReturnType<typeof setTimeout> | null = null;
   private backlog: Buffer[] = [];
   private pending = ''; // final transcript segments of the rep's current turn
+  private heardWhileSpeaking = ''; // backchannels the rep said while we talked, added to their next turn
 
   private started = false;
   private stopped = false;
@@ -159,9 +175,12 @@ export class ClaudeVoiceSession {
     this.started = true;
     console.log(`[ClaudeVoice] Start callId=${this.host.callId} model=${MODEL}`);
     this.connectDeepgram();
+    const heard = this.host.repGreeting?.trim();
     this.messages.push({
       role: 'user',
-      content: `[The rep just answered the call.] ${buildOpeningInstruction(this.host.task)}`,
+      content: heard
+        ? `[The rep just answered the call and said:] "${heard}"\n\n${buildOpeningInstruction(this.host.task)}`
+        : `[The rep just answered the call.] ${buildOpeningInstruction(this.host.task)}`,
     });
     void this.runTurn();
   }
@@ -258,8 +277,15 @@ export class ClaudeVoiceSession {
     const text: string = (data.channel?.alternatives?.[0]?.transcript ?? '').trim();
     if (!text) return;
 
-    // The rep is talking over us: stop immediately, before their sentence even ends.
-    if (this.isSpeaking() && wordCount(`${this.pending} ${text}`) >= 2) this.bargeIn();
+    // The rep is talking over us with a real sentence: stop before it even ends.
+    // Short acknowledgements ("Go ahead", "Okay", "Hello?") don't stop us.
+    if (this.isSpeaking()) {
+      const heard = `${this.pending} ${text}`.trim();
+      const n = wordCount(heard);
+      if (!isBackchannel(heard) && (n >= BARGE_INTERIM_WORDS || (data.is_final && n >= BARGE_FINAL_WORDS))) {
+        this.bargeIn();
+      }
+    }
 
     if (data.is_final) this.pending = this.pending ? `${this.pending} ${text}` : text;
     if (data.speech_final) this.flushTurn();
@@ -279,12 +305,19 @@ export class ClaudeVoiceSession {
       return;
     }
     if (this.isSpeaking()) {
-      if (wordCount(text) < 2) return; // "okay" / "mm-hmm" while we talk — keep talking
+      if (isBackchannel(text) || wordCount(text) < BARGE_FINAL_WORDS) {
+        // "Okay" / "go ahead" while we talk: keep talking, but let Claude see it next turn.
+        this.host.recordRepSay(text);
+        this.heardWhileSpeaking = this.heardWhileSpeaking ? `${this.heardWhileSpeaking} ${text}` : text;
+        return;
+      }
       this.bargeIn();
     }
     console.log(`[ClaudeVoice] Rep: "${text.substring(0, 80)}" callId=${this.host.callId}`);
     this.host.recordRepSay(text);
-    this.appendUser(text);
+    const said = this.heardWhileSpeaking ? `${this.heardWhileSpeaking} ${text}` : text;
+    this.heardWhileSpeaking = '';
+    this.appendUser(said);
     void this.runTurn();
   }
 
