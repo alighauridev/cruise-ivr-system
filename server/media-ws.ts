@@ -856,7 +856,7 @@ export async function pressDigitOnCall(callId: string, digit: string): Promise<{
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A rep's pick-up line: gives their name, or asks who is calling / how they can help — and is not a menu or ad. */
-const REP_ASKS = /\b(?:to whom|who) (?:do i have|am i speaking|is calling|am i talking)|\bwho do i have the pleasure|\bhow (?:can|may) i (?:help|assist)|\bcan i (?:get|have) (?:your|the) (?:name|booking|reservation)|\bmy name is [a-z]+/i;
+const REP_ASKS = /\b(?:(?:to|with) whom|whom?) (?:do i have|am i speaking|is calling|am i talking)|\bwhom? do i have the pleasure|\bhow (?:can|may) i (?:help|assist)|\bcan i (?:get|have) (?:your|the) (?:name|booking|reservation)|\bmy name is [a-z]+/i;
 /** "This is Kevin" — a capitalized first name, not "This is Princess Cruises" / "This is a reminder". */
 const REP_NAME = /\b(?:[Tt]his is|[Yy]ou(?:'re| are) speaking (?:with|to)) ([A-Z][a-z]+)\b/;
 const NOT_A_NAME = /^(?:Princess|Carnival|Royal|Celebrity|Norwegian|Holland|Disney|Msc|MSC|Virgin|Cunard|Viking|Oceania|Regent|Seabourn|Silversea|Azamara|Windstar|Crystal|Explora|Atlas|Avalon|American|Business|Club|Your|Our|The|A|An|It|Not|Just|What|Why|How|Medallion|Alaska|Hawaii|Caribbean|Mexico|Europe|Bermuda|Canada|Japan|Australia|Asia|Antarctica|Panama|Greece|Italy|Spain|Iceland|Norway|Florida|Galveston|Seattle|Miami|Sail|Cruise|Vacation|Adventure|Paradise)$/;

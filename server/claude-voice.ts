@@ -126,6 +126,8 @@ function cleanForSpeech(raw: string): string {
     .replace(/<[^>]*>/g, ' ')
     .replace(/[*_#`~]/g, '')
     .replace(/\s+/g, ' ')
+    // Agency IDs / booking numbers as digits: "52449261" → "5, 2, 4, 4, 9, 2, 6, 1", never "fifty-two million…". Prices ($1120, 1,120) and years are left alone.
+    .replace(/(?<![$\d,.])\d{5,}(?![,.]?\d)/g, (n) => n.split('').join(', '))
     .trim();
   if (!/[A-Za-z0-9]/.test(s)) return '';
   if (/\b(end_call|transfer_to_team)\b/i.test(s)) return '';
@@ -189,7 +191,7 @@ export class ClaudeVoiceSession {
       (err) => console.error(`[ClaudeVoice] Opener TTS error callId=${this.host.callId}:`, err instanceof Error ? err.message : err),
     );
     const heard = this.host.repGreeting?.trim();
-    const said = `[You have already said "${OPENER}" out loud. Do not greet again; carry straight on.]`;
+    const said = `[You have already said "${OPENER}" out loud. Do not say hi or hello again: start with their name if they gave one ("Kevin, I'm...") and carry straight on.]`;
     this.messages.push({
       role: 'user',
       content: heard
