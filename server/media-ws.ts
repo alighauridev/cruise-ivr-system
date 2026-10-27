@@ -544,13 +544,13 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.isVirtualAssistant = true;
   }
 
-  // 2b. A bare "Hello?" said twice within 20s is a live person waiting for us to speak.
-  // The AI classifier ignores a single "Hello?" (menus say it too), but menus don't repeat it.
+  // 2b. A bare "Hello?" asked as a question, or any bare greeting said twice within 20s, is a
+  // live person waiting for us to speak. Menus may say "Hello." but don't ask it or repeat it.
   if (!state.isVirtualAssistant && BARE_GREETING.test(transcript.trim())) {
     const now = Date.now();
     state.helloTimes = [...state.helloTimes.filter((t) => now - t < 20_000), now];
-    if (state.helloTimes.length >= 2) {
-      console.log(`[IVR] Repeated "Hello?" — treating as live person callId=${state.callId}`);
+    if (transcript.includes('?') || state.helloTimes.length >= 2) {
+      console.log(`[IVR] "Hello?" — treating as live person callId=${state.callId}`);
       await handleAgentDetected(state, transcript);
       return;
     }

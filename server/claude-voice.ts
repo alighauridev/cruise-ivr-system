@@ -11,7 +11,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import WebSocket from 'ws';
-import { streamTTSMulaw } from '@/lib/openai-tts';
+import { generateTTSMulaw, streamTTSMulaw } from '@/lib/openai-tts';
 import {
   AiOutcome,
   AiTaskDetails,
@@ -29,6 +29,10 @@ const MODEL = process.env.CLAUDE_VOICE_MODEL ?? 'claude-sonnet-5-5';
 const ENDPOINTING_MS = Number(process.env.CLAUDE_ENDPOINTING_MS ?? 700);
 const DG_MAX_RETRIES = 5;
 const BACKLOG_FRAMES = 400; // ~8s of 20ms frames kept while Deepgram connects
+
+/** Said the instant the rep answers, from cached audio, so they never wait on Claude in silence. */
+const OPENER = 'Hi there!';
+void generateTTSMulaw(OPENER).catch(() => {}); // warm the disk cache at boot
 
 const OUTCOMES: AiOutcome[] = ['resolved', 'partial', 'not_resolved', 'rep_refused_ai'];
 
@@ -164,6 +168,7 @@ export class ClaudeVoiceSession {
   private ttsChain: Promise<void> = Promise.resolve();
   private ttsFailures = 0;
   private playEndsAt = 0; // when audio already sent to Twilio finishes playing (8000 mulaw bytes = 1s)
+  private opener: Promise<void> = Promise.resolve(); // first turn's speech queues behind it
 
   constructor(private readonly host: ClaudeVoiceHost) {
     this.system = buildAgentInstructions(host.task) + PHONE_STYLE;
@@ -175,12 +180,21 @@ export class ClaudeVoiceSession {
     this.started = true;
     console.log(`[ClaudeVoice] Start callId=${this.host.callId} model=${MODEL}`);
     this.connectDeepgram();
+    this.opener = streamTTSMulaw(OPENER, (chunk) => {
+      if (this.host.isDone()) return;
+      this.playEndsAt = Math.max(this.playEndsAt, Date.now()) + chunk.length / 8;
+      this.host.sendAudio(chunk);
+    }).then(
+      () => this.host.recordAiSay(OPENER),
+      (err) => console.error(`[ClaudeVoice] Opener TTS error callId=${this.host.callId}:`, err instanceof Error ? err.message : err),
+    );
     const heard = this.host.repGreeting?.trim();
+    const said = `[You have already said "${OPENER}" out loud. Do not greet again; carry straight on.]`;
     this.messages.push({
       role: 'user',
       content: heard
-        ? `[The rep just answered the call and said:] "${heard}"\n\n${buildOpeningInstruction(this.host.task)}`
-        : `[The rep just answered the call.] ${buildOpeningInstruction(this.host.task)}`,
+        ? `[The rep just answered the call and said:] "${heard}"\n${said}\n\n${buildOpeningInstruction(this.host.task)}`
+        : `[The rep just answered the call.]\n${said}\n\n${buildOpeningInstruction(this.host.task)}`,
     });
     void this.runTurn();
   }
@@ -366,7 +380,7 @@ export class ClaudeVoiceSession {
     this.active = true;
     this.spoken = [];
     this.sentenceBuf = '';
-    this.ttsChain = Promise.resolve(); // a fresh chain, so an interrupted turn can't delay this one
+    this.ttsChain = this.opener; // a fresh chain, so an interrupted turn can't delay this one
     const t0 = Date.now();
 
     let final: Anthropic.Message;

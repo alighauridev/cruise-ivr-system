@@ -81,18 +81,18 @@ interface AiTaskForm {
 }
 
 const EMPTY_AI_FORM: AiTaskForm = {
-  requestType: 'waitlist', request: '', bookingNumber: '', guestName: '', guestDob: '',
+  requestType: 'other', request: '', bookingNumber: '', guestName: '', guestDob: '',
   shipAndSailDate: '', agencyId: '', agentName: '', mayAgreeTo: '',
 };
 
 // Start with low-risk requests that need no payment.
 const AI_REQUEST_TYPES = [
+  { value: 'other', label: 'Other' },
   { value: 'waitlist', label: 'Waitlist (tour, cabin, dining)' },
   { value: 'status_check', label: 'Check status of a booking/request' },
   { value: 'resend_confirmation', label: 'Resend confirmation/documents' },
   { value: 'addon_no_payment', label: 'Add-on that needs no payment' },
   { value: 'question', label: 'Question about a booking/policy' },
-  { value: 'other', label: 'Other' },
 ];
 
 

@@ -37,18 +37,18 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS;
 
-export function Icon({ name, className = 'h-5 w-5', strokeWidth = 1.7 }: { name: IconName; className?: string; strokeWidth?: number }) {
-  const d = PATHS[name];
-  const paths = Array.isArray(d) ? d : [d];
-  if (name === 'dialpad') strokeWidth = Math.max(strokeWidth, 3.2); // the keys are dots, so they need weight
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {paths.map((p) => (
-        <path key={p} d={p} />
-      ))}
-    </svg>
-  );
-}
+  export function Icon({ name, className = 'h-5 w-5', strokeWidth = 1.7 }: { name: IconName; className?: string; strokeWidth?: number }) {
+    const d = PATHS[name];
+    const paths = Array.isArray(d) ? d : [d];
+    if (name === 'dialpad') strokeWidth = Math.max(strokeWidth, 3.2); // the keys are dots, so they need weight
+    return (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {paths.map((p) => (
+          <path key={p} d={p} />
+        ))}
+      </svg>
+    );
+  }
 
 export function BrandMark({ className = 'h-9 w-9' }: { className?: string }) {
   return (
