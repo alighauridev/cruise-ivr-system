@@ -561,10 +561,11 @@ export default function AgentPage() {
                     placeholder="Type it once — saved for this cruise line"
                     className="input"
                   />
-                  <p className={`mt-1 text-xs ${agencySave === 'error' ? 'text-bad' : agencySave === 'saved' ? 'text-ok' : 'text-muted'}`}>
+                  <p className={`mt-1 text-xs ${agencySave === 'error' || (!aiForm.agencyId.trim() && aiTask.trim()) ? 'text-bad' : agencySave === 'saved' ? 'text-ok' : 'text-muted'}`}>
                     {agencySave === 'saving' ? 'Saving…'
                       : agencySave === 'error' ? 'Could not save — try again'
                       : aiForm.agencyId.trim() ? '✓ Saved for ' + selectedLead.name
+                      : aiTask.trim() ? 'Not set for ' + selectedLead.name + ' — if the rep asks for it, the AI hands the call to your team'
                       : 'Not set for ' + selectedLead.name}
                   </p>
                 </div>
