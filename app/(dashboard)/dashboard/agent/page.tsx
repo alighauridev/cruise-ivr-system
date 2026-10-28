@@ -887,6 +887,9 @@ export default function AgentPage() {
                       ? `Said: "${d.phrase}"`
                       : d.action ?? 'action';
                     dot = 'ai';
+                  } else if (ev.event_type === 'ai_engine') {
+                    label = `AI used: ${(ev.details as Record<string, string>).label}`;
+                    dot = 'ai';
                   } else {
                     label = EVENT_LABEL[ev.event_type] ?? ev.event_type.replace(/_/g, ' ');
                     dot = EVENT_TONE[ev.event_type] ?? 'neutral';

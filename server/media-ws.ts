@@ -4,7 +4,7 @@ import { twilioClient, twilioPhone } from '@/lib/twilio';
 import { decideAction, detectAgentWithAI, ConversationTurn } from './ai-navigator';
 import { detectAgentFromTranscript, detectVirtualAssistant, detectVoicemail } from '@/lib/deepgram';
 import { notifyAgentDetected } from '@/lib/notifications';
-import { generateTTSMulaw, streamTTSMulaw } from '@/lib/openai-tts';
+import { generateTTSMulaw, streamTTSMulaw, TTS_LABEL } from '@/lib/openai-tts';
 import { ConversationTurn as ConvTurn } from './conversation-engine';
 import {
   AiOutcome,
@@ -18,7 +18,7 @@ import {
   summarizeTranscript,
 } from './ai-call-agent';
 import { sendSMS } from '@/lib/twilio';
-import { AiEngine, ClaudeVoiceSession, resolveAiEngine } from './claude-voice';
+import { AiEngine, CLAUDE_MODEL, CLAUDE_STT_MODEL, ClaudeVoiceSession, resolveAiEngine } from './claude-voice';
 
 import { IVRExecutor, ExecutorAction } from './ivr-executor';
 import { IVRStep } from '@/lib/ivr-engine';
@@ -935,6 +935,7 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
 
     state.aiEngine = resolveAiEngine(call?.ai_engine);
     console.log(`[AI] Engine=${state.aiEngine} callId=${state.callId}`);
+    recordAiEngine(state);
     if (state.aiEngine === 'claude') {
       startClaudeVoice(state);
     } else {
@@ -1169,6 +1170,7 @@ function startClaudeVoice(state: SessionState): void {
           INSERT INTO call_events (call_id, event_type, details)
           VALUES (${state.callId}, 'ai_engine_fallback', ${JSON.stringify({ from: 'claude', to: 'openai', reason })})
         `.catch(() => {});
+        recordAiEngine(state, `switched from Claude: ${reason}`);
         connectOpenAIRealtime(state).catch((err) => {
           console.error(`[OpenAI RT] Fallback connect error callId=${state.callId}:`, err);
           handOffToTeam(state, 'AI voice could not start', 'The AI could not start, so the call was passed straight to the team.').catch(() => {});
@@ -1185,6 +1187,21 @@ function startClaudeVoice(state: SessionState): void {
 // ─── OpenAI Realtime API ─────────────────────────────────────────────────────
 
 const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
+const RT_VOICE = 'coral';
+
+/** Save which engine and models handled this call, on the call row and in its timeline. */
+function recordAiEngine(state: SessionState, note?: string, confirmedRtModel?: string): void {
+  const label = state.aiEngine === 'claude'
+    ? `Claude ${CLAUDE_MODEL} · listening Deepgram ${CLAUDE_STT_MODEL} · voice ${TTS_LABEL}`
+    : `OpenAI ${confirmedRtModel ? `${confirmedRtModel} (confirmed by OpenAI)` : RT_MODEL} · voice ${RT_VOICE}`;
+  const full = note ? `${label} · ${note}` : label;
+  console.log(`[AI] Engine used: ${full} callId=${state.callId}`);
+  sql`UPDATE calls SET ai_engine_used = ${full}, updated_at = NOW() WHERE id = ${state.callId}`.catch(() => {});
+  sql`
+    INSERT INTO call_events (call_id, event_type, details)
+    VALUES (${state.callId}, 'ai_engine', ${JSON.stringify({ label: full })})
+  `.catch(() => {});
+}
 /** If the goodbye/handoff audio never reports finished, act anyway after this long. */
 const FINISH_FALLBACK_MS = 8_000;
 
@@ -1234,7 +1251,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
               silence_duration_ms: 900,
             },
           },
-          output: { format: { type: 'audio/pcmu' }, voice: 'coral' },
+          output: { format: { type: 'audio/pcmu' }, voice: RT_VOICE },
         },
         tools: AGENT_TOOLS,
         tool_choice: 'auto',
@@ -1362,6 +1379,11 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
           }
           break;
         }
+
+        case 'session.created':
+          // OpenAI's own word on which model is answering — the proof for this call's record.
+          if (event.session?.model) recordAiEngine(state, undefined, event.session.model);
+          break;
 
         case 'error':
           console.error(`[OpenAI RT] API error callId=${state.callId}:`, event.error);

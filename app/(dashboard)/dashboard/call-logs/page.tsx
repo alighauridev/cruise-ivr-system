@@ -18,6 +18,7 @@ interface Call {
   ai_task: string | null;
   ai_outcome: string | null;
   ai_summary: string | null;
+  ai_engine_used: string | null;
   recording_url: string | null;
   transcript: { text?: string; utterances?: Array<{ speaker: number; text: string; start: number; end: number }> } | null;
   owner_name?: string;
@@ -200,6 +201,7 @@ export default function CallLogsPage() {
                                   </div>
                                   <p className="text-body">{call.ai_task}</p>
                                   {call.ai_summary && <p className="mt-2 whitespace-pre-wrap font-medium text-ink">{call.ai_summary}</p>}
+                                  {call.ai_engine_used && <p className="mt-2 text-xs text-muted">AI used: {call.ai_engine_used}</p>}
                                 </div>
                               )}
                               <h4 className="eyebrow mb-3">Call transcript</h4>

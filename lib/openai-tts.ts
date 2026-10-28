@@ -65,6 +65,8 @@ export async function generateTTS(text: string): Promise<Buffer> {
 const AURA_VOICE = process.env.TTS_AURA_VOICE ?? 'aura-2-thalia-en';
 const PRIMARY: 'aura' | 'openai' =
   process.env.TTS_PROVIDER === 'openai' || !process.env.DEEPGRAM_API_KEY ? 'openai' : 'aura';
+/** Which voice calls use, for the per-call record. */
+export const TTS_LABEL = PRIMARY === 'aura' ? `Deepgram ${AURA_VOICE} (backup OpenAI ${TTS_MODEL})` : `OpenAI ${TTS_MODEL} ${TTS_VOICE}`;
 /** No audio within this long = that provider is stalled; try the other one. */
 const FIRST_AUDIO_MS = { aura: 3000, openai: 6000 };
 const TOTAL_MS = 30_000;

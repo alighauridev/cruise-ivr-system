@@ -24,7 +24,9 @@ import {
 export type AiEngine = 'claude' | 'openai';
 
 /** Sonnet 5.5 for quality on live calls; set CLAUDE_VOICE_MODEL=claude-haiku-5-5 for faster, cheaper replies. */
-const MODEL = process.env.CLAUDE_VOICE_MODEL ?? 'claude-sonnet-5-5';
+export const CLAUDE_MODEL = process.env.CLAUDE_VOICE_MODEL ?? 'claude-sonnet-5-5';
+const MODEL = CLAUDE_MODEL;
+export const CLAUDE_STT_MODEL = 'nova-2-phonecall';
 /** How long Deepgram waits after the rep stops talking before calling the turn finished. */
 const ENDPOINTING_MS = Number(process.env.CLAUDE_ENDPOINTING_MS ?? 700);
 const DG_MAX_RETRIES = 5;
@@ -246,7 +248,7 @@ export class ClaudeVoiceSession {
       return;
     }
     const params = new URLSearchParams({
-      model: 'nova-2-phonecall',
+      model: CLAUDE_STT_MODEL,
       language: 'en-US',
       encoding: 'mulaw',
       sample_rate: '8000',
