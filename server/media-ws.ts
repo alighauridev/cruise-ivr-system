@@ -465,6 +465,15 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
     dgSocket.on('message', async (raw: WebSocket.RawData) => {
       try {
         const data = JSON.parse(raw.toString());
+        const flush = async () => {
+          const full = state.currentTranscript.trim();
+          state.currentTranscript = '';
+          if (full) await processIVRSpeech(state, full);
+        };
+
+        // Over hold music Deepgram may never send speech_final, so hold messages and the rep's
+        // greeting piled up into one transcript that arrived up to a minute late.
+        if (data?.type === 'UtteranceEnd') { await flush(); return; }
         if (!data?.channel) return;
         const transcript: string = data.channel?.alternatives?.[0]?.transcript ?? '';
         const isFinal: boolean = data.is_final ?? false;
@@ -473,14 +482,20 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
         if (!transcript.trim()) return;
 
         if (isFinal) {
+          // A rep picking up on hold: act on this piece now, not after the speaker "finishes".
+          // Earlier hold-message text is processed on its own so its menu words don't mask the rep.
+          const t = transcript.trim();
+          if (!state.isAgentDetected && state.ivrExecutor?.isInHoldMode() &&
+              (looksLikeLiveRep(t) || (BARE_GREETING.test(t) && t.includes('?')))) {
+            await flush();
+            state.currentTranscript = t;
+            await flush();
+            return;
+          }
           state.currentTranscript += (state.currentTranscript ? ' ' : '') + transcript;
         }
 
-        if (speechFinal && state.currentTranscript.trim()) {
-          const full = state.currentTranscript.trim();
-          state.currentTranscript = '';
-          await processIVRSpeech(state, full);
-        }
+        if (speechFinal || state.currentTranscript.split(/\s+/).length >= 40) await flush();
       } catch (err: any) {
         console.error(`[Deepgram] Message parse error:`, err?.message);
       }
@@ -856,7 +871,7 @@ export async function pressDigitOnCall(callId: string, digit: string): Promise<{
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A rep's pick-up line: gives their name, or asks who is calling / how they can help — and is not a menu or ad. */
-const REP_ASKS = /\b(?:(?:to|with) whom|whom?) (?:do i have|am i speaking|is calling|am i talking)|\bwhom? do i have the pleasure|\bhow (?:can|may) i (?:help|assist)|\bcan i (?:get|have) (?:your|the) (?:name|booking|reservation)|\bmy name is [a-z]+/i;
+const REP_ASKS = /\b(?:(?:to|with) whom|whom?) (?:do i have|am i speaking|is calling|am i talking)|\bwhom? do i have the pleasure|\bhow (?:can|may) i (?:help|assist)|\bcan i (?:get|have) (?:your|the) (?:name|booking|reservation)|\bmy name is [a-z]+|\bare you (?:still )?(?:on the line|there)\b|\bcan you hear me\b/i;
 /** "This is Kevin" — a capitalized first name, not "This is Princess Cruises" / "This is a reminder". */
 const REP_NAME = /\b(?:[Tt]his is|[Yy]ou(?:'re| are) speaking (?:with|to)) ([A-Z][a-z]+)\b/;
 const NOT_A_NAME = /^(?:Princess|Carnival|Royal|Celebrity|Norwegian|Holland|Disney|Msc|MSC|Virgin|Cunard|Viking|Oceania|Regent|Seabourn|Silversea|Azamara|Windstar|Crystal|Explora|Atlas|Avalon|American|Business|Club|Your|Our|The|A|An|It|Not|Just|What|Why|How|Medallion|Alaska|Hawaii|Caribbean|Mexico|Europe|Bermuda|Canada|Japan|Australia|Asia|Antarctica|Panama|Greece|Italy|Spain|Iceland|Norway|Florida|Galveston|Seattle|Miami|Sail|Cruise|Vacation|Adventure|Paradise)$/;
