@@ -1184,7 +1184,7 @@ function startClaudeVoice(state: SessionState): void {
 
 // ─── OpenAI Realtime API ─────────────────────────────────────────────────────
 
-const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime';
+const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
 /** If the goodbye/handoff audio never reports finished, act anyway after this long. */
 const FINISH_FALLBACK_MS = 8_000;
 
