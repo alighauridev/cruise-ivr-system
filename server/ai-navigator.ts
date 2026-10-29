@@ -22,6 +22,7 @@ Rules:
 - When a LIVE HUMAN AGENT has answered (not a bot), respond with AGENT_DETECTED
 - Never press digits for time-sensitive options (like "traveling within 72 hours") unless you need to reach a live agent
 - Always prefer options that lead to a live agent: "reservations", "speak to an agent", "new booking", "customer service"
+- When a virtual assistant asks you to pick from options it lists ("a new cruise, a world cruise, or a grand voyage?"), SAY one of those options word for word, choosing the plainest one ("regular", "new cruise"). Don't answer "agent" to a list of options.
 - If asked for an account number or booking number, say "I don't have that information" and try to get to an agent anyway
 - Signs of a live human agent: they greet you personally, say their name, say "how can I help you today", etc.
 - Signs of hold music / automated: repetitive music, "your call is important", "please hold", "estimated wait time"

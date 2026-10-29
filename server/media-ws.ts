@@ -905,8 +905,8 @@ function looksLikeLiveRep(transcript: string): boolean {
   return !!m && !NOT_A_NAME.test(m[1]);
 }
 
-/** An automated assistant asking us something: a question, or "please say / tell me / choose". */
-const IVR_ASKS = /\?|\b(?:say|tell me|choose|select)\b/i;
+/** An automated assistant asking us something; transcripts often drop the "?" ("…which type of cruise you're interested in"). */
+const IVR_ASKS = /\?|\b(?:say|tell me|choose|select|share|which|would you like|are you looking|are you calling)\b/i;
 /** Only a greeting: "Hello?", "Hi.", "Hello there.", "Good morning.", "Hello? Hello?", "Can you hear me?". */
 const BARE_GREETING = /^(?:(?:(?:hello|hi|hey)(?: there)?|good (?:morning|afternoon|evening)|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
 
