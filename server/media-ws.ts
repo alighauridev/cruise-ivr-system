@@ -108,6 +108,8 @@ interface SessionState {
   endCallNudged: boolean;
   /** Virtual-assistant questions answered after the script went on hold (capped so it can't loop). */
   holdAnswers: number;
+  /** Realtime's first reply has been sent; until then Deepgram keeps listening so the AI hears the rep's whole greeting. */
+  rtGreetingSent: boolean;
   /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
   aiOutcomeSaved: boolean;
   /** Twilio mark name that, when played, triggers the pending finish action. */
@@ -253,6 +255,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             aiFinishing: false,
             endCallNudged: false,
             holdAnswers: 0,
+            rtGreetingSent: false,
             aiOutcomeSaved: false,
             pendingFinishMark: null,
             pendingFinishAction: null,
@@ -501,7 +504,7 @@ async function connectDeepgram(state: SessionState, attempt: number): Promise<vo
           state.currentTranscript += (state.currentTranscript ? ' ' : '') + transcript;
         }
 
-        if (speechFinal || state.currentTranscript.split(/\s+/).length >= 40) await flush();
+        if (speechFinal || data.from_finalize || state.currentTranscript.split(/\s+/).length >= 40) await flush();
       } catch (err: any) {
         console.error(`[Deepgram] Message parse error:`, err?.message);
       }
@@ -535,6 +538,11 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
 
   // Route to conversation processor when in AI conversation mode
   if (state.aiConversationMode) {
+    // Realtime is still connecting: keep the rest of the rep's greeting ("…a new or existing
+    // booking?") for its first reply.
+    if (state.aiEngine === 'openai' && !state.rtGreetingSent) {
+      state.recentHeard = [...state.recentHeard.slice(-5), { text: transcript, at: Date.now() }];
+    }
     // OpenAI Realtime handles listening + replying. Deepgram transcripts that arrive
     // during the switchover must not trigger the legacy Deepgram→GPT→TTS pipeline:
     // it double-replied and its prompt posed as the guest. If Realtime fails, the
@@ -954,10 +962,9 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     // the stream down just as the opening line was sent, so reps heard silence.)
     console.log(`[AI] Entered ai_conversation mode callId=${state.callId} task="${taskDetails.request.substring(0, 40)}"`);
 
-    // Deepgram is no longer needed — OpenAI Realtime listens from here on.
-    try { state.dgSocket?.close(); } catch {}
-
     state.aiEngine = resolveAiEngine(call?.ai_engine);
+    // Claude has its own Deepgram. Realtime's is closed once its first reply is sent.
+    if (state.aiEngine === 'claude') { try { state.dgSocket?.close(); } catch {} }
     console.log(`[AI] Engine=${state.aiEngine} callId=${state.callId}`);
     recordAiEngine(state);
     if (state.aiEngine === 'claude') {
@@ -1242,6 +1249,37 @@ function sendToTwilio(state: SessionState, payload: Record<string, unknown>): vo
  * The agent speaks for the agency, discloses it is an AI, and can end the call or
  * hand it to the team through function calls.
  */
+/**
+ * Realtime only hears audio from when it connects, so tell it what the rep said on picking up
+ * (Renee: "…You're speaking with Renee. Are you calling regarding a new or existing booking?").
+ * Deepgram is still listening: flush its last words, waiting up to 700ms for the sentence to end.
+ */
+async function sendRealtimeOpening(state: SessionState, rtWs: WebSocket, task: AiTaskDetails): Promise<void> {
+  try { state.dgSocket?.send(JSON.stringify({ type: 'Finalize' })); } catch {}
+  const lastHeard = () => state.recentHeard[state.recentHeard.length - 1]?.text.trim() ?? '';
+  for (const t0 = Date.now(); Date.now() - t0 < 700 && !/[.?!]$/.test(lastHeard()); ) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  state.rtGreetingSent = true;
+  try { state.dgSocket?.close(); } catch {}
+  if (state.isTerminated || rtWs.readyState !== WebSocket.OPEN) return;
+
+  const since = Date.now() - 15_000;
+  const heard = state.recentHeard.filter((h) => h.at >= since).map((h) => h.text).join(' ').trim();
+  if (heard) {
+    rtWs.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `[The rep just answered the call and said:] "${heard}"` }] },
+    }));
+  }
+  rtWs.send(JSON.stringify({
+    type: 'response.create',
+    // response.instructions REPLACES the session prompt for this reply, so include the full
+    // prompt (facts + request) or the AI invents a booking number and request.
+    response: { instructions: `${buildAgentInstructions(task)}\n\n${buildOpeningInstruction(task)}` },
+  }));
+}
+
 async function connectOpenAIRealtime(state: SessionState): Promise<void> {
   if (state.openaiRtWs) return; // already connected
   const task = state.aiTaskDetails;
@@ -1269,7 +1307,9 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
         audio: {
           input: {
             format: { type: 'audio/pcmu' }, // g711 µ-law passthrough from Twilio
-            transcription: { model: 'whisper-1' },
+            // whisper-1 turned silence into "you", "Weird." and Welsh, which also went into summaries.
+            transcription: { model: 'gpt-4o-transcribe', language: 'en' },
+            noise_reduction: { type: 'near_field' }, // fewer replies to line noise and typing
             turn_detection: {
               type: 'server_vad',
               threshold: 0.65,
@@ -1286,12 +1326,7 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
 
     if (state.aiConversationHistory.length === 0) {
       // Opening line. The Twilio stream is already open and bidirectional.
-      rtWs.send(JSON.stringify({
-        type: 'response.create',
-        // response.instructions REPLACES the session prompt for this reply, so include the full
-        // prompt (facts + request) or the AI invents a booking number and request.
-        response: { instructions: `${buildAgentInstructions(task)}\n\n${buildOpeningInstruction(task)}` },
-      }));
+      void sendRealtimeOpening(state, rtWs, task);
     } else {
       // Reconnected mid-conversation — replay history so OpenAI has context.
       for (const turn of state.aiConversationHistory) {
