@@ -104,6 +104,8 @@ interface SessionState {
   aiTaskDetails: AiTaskDetails | null;
   /** Set once end_call / transfer_to_team / survey-cutoff has started — the AI stops talking. */
   aiFinishing: boolean;
+  /** end_call was sent back once because the AI hadn't read the result back and said goodbye yet. */
+  endCallNudged: boolean;
   /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
   aiOutcomeSaved: boolean;
   /** Twilio mark name that, when played, triggers the pending finish action. */
@@ -247,6 +249,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             aiResponseBuffer: '',
             aiTaskDetails: null,
             aiFinishing: false,
+            endCallNudged: false,
             aiOutcomeSaved: false,
             pendingFinishMark: null,
             pendingFinishAction: null,
@@ -559,13 +562,14 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
     state.isVirtualAssistant = true;
   }
 
-  // 2b. A bare "Hello?" asked as a question, or any bare greeting said twice within 20s, is a
-  // live person waiting for us to speak. Menus may say "Hello." but don't ask it or repeat it.
+  // 2b. A bare greeting is a live person waiting for us to speak when it's asked ("Hello?"),
+  // said twice within 20s, or heard on a call with no IVR script (a person answers directly).
+  // Menus may say "Hello." but don't ask it or repeat it.
   if (!state.isVirtualAssistant && BARE_GREETING.test(transcript.trim())) {
     const now = Date.now();
     state.helloTimes = [...state.helloTimes.filter((t) => now - t < 20_000), now];
-    if (transcript.includes('?') || state.helloTimes.length >= 2) {
-      console.log(`[IVR] "Hello?" — treating as live person callId=${state.callId}`);
+    if (transcript.includes('?') || state.helloTimes.length >= 2 || !state.ivrExecutor) {
+      console.log(`[IVR] Greeting "${transcript}" — treating as live person callId=${state.callId}`);
       await handleAgentDetected(state, transcript);
       return;
     }
@@ -883,8 +887,8 @@ function looksLikeLiveRep(transcript: string): boolean {
   return !!m && !NOT_A_NAME.test(m[1]);
 }
 
-/** Only a greeting: "Hello?", "Hi.", "Hello? Hello?", "Can you hear me?". */
-const BARE_GREETING = /^(?:(?:hello|hi|hey|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
+/** Only a greeting: "Hello?", "Hi.", "Hello there.", "Good morning.", "Hello? Hello?", "Can you hear me?". */
+const BARE_GREETING = /^(?:(?:(?:hello|hi|hey)(?: there)?|good (?:morning|afternoon|evening)|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
 
 async function handleAgentDetected(state: SessionState, transcript: string) {
   if (state.isAgentDetected || state.isTerminated) return;
@@ -1188,6 +1192,8 @@ function startClaudeVoice(state: SessionState): void {
 
 const RT_MODEL = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
 const RT_VOICE = 'coral';
+/** The AI's last words before end_call should be a goodbye. */
+const SAID_GOODBYE = /\b(?:good)?bye\b|\bhave a (?:great|good|nice|wonderful)\b|\btake care\b/i;
 
 /** Save which engine and models handled this call, on the call row and in its timeline. */
 function recordAiEngine(state: SessionState, note?: string, confirmedRtModel?: string): void {
@@ -1360,6 +1366,26 @@ async function connectOpenAIRealtime(state: SessionState): Promise<void> {
           if (item?.type !== 'function_call') break;
           let args: Record<string, string> = {};
           try { args = JSON.parse(item.arguments ?? '{}'); } catch {}
+          // The model sometimes says "Let me just confirm, then we can wrap up" and hangs up in the
+          // same turn. Send end_call back once so it reads the result back and says goodbye first.
+          const lastSaid = [...state.aiConversationHistory].reverse().find((h) => h.speaker === 'us')?.text ?? '';
+          if (item.name === 'end_call' && !state.endCallNudged && !SAID_GOODBYE.test(lastSaid)) {
+            state.endCallNudged = true;
+            console.log(`[OpenAI RT] end_call before goodbye — asking for read-back callId=${state.callId}`);
+            rtWs.send(JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'function_call_output',
+                call_id: item.call_id,
+                output: JSON.stringify({
+                  ok: false,
+                  error: 'Not ended: you have not said goodbye. Out loud, repeat back the result in one sentence (prices, numbers, names), thank the rep, say goodbye, then call end_call again.',
+                }),
+              },
+            }));
+            rtWs.send(JSON.stringify({ type: 'response.create' }));
+            break;
+          }
           // Acknowledge so the conversation state stays valid.
           rtWs.send(JSON.stringify({
             type: 'conversation.item.create',

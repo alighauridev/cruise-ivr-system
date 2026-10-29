@@ -114,6 +114,7 @@ Before calling transfer_to_team, say one short sentence such as "One moment, I'l
 
 ENDING THE CALL (call end_call):
 - When the request is done, or the rep has clearly said it cannot be done, confirm what was done (and any reference number, waitlist position, or next step) by repeating it back, thank the rep, and say goodbye.
+- Do the read-back in that same reply, never "let me confirm" and stop. Example: "Great, so that's $18 per person per day, $252 total. Thanks so much, have a great day, bye!"
 - Only AFTER you have said goodbye, call end_call with an outcome and a short summary for the advisor that includes any reference numbers, names, and next steps the rep gave.
 - If you hear a recorded survey, IVR menu, or silence after the rep leaves, call end_call immediately.
 
