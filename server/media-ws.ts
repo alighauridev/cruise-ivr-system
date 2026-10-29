@@ -106,6 +106,8 @@ interface SessionState {
   aiFinishing: boolean;
   /** end_call was sent back once because the AI hadn't read the result back and said goodbye yet. */
   endCallNudged: boolean;
+  /** Virtual-assistant questions answered after the script went on hold (capped so it can't loop). */
+  holdAnswers: number;
   /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
   aiOutcomeSaved: boolean;
   /** Twilio mark name that, when played, triggers the pending finish action. */
@@ -250,6 +252,7 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             aiTaskDetails: null,
             aiFinishing: false,
             endCallNudged: false,
+            holdAnswers: 0,
             aiOutcomeSaved: false,
             pendingFinishMark: null,
             pendingFinishAction: null,
@@ -623,7 +626,22 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
       if (!detectVirtualAssistant(transcript) && transcript.trim().split(/\s+/).length >= 1) {
         const recentHistory = state.history.slice(-3).map((t) => `${t.speaker}: ${t.text}`);
         const isAgent = await detectAgentWithAI(transcript, recentHistory);
-        if (isAgent) await handleAgentDetected(state, transcript);
+        if (isAgent) {
+          await handleAgentDetected(state, transcript);
+          return;
+        }
+      }
+
+      // A virtual assistant still asking after the script ran out ("A new cruise, a world cruise,
+      // or a grand voyage?") hangs up if nobody answers, so answer it like a call with no script.
+      if (IVR_ASKS.test(transcript) && state.holdAnswers < 4 && !state.isAgentDetected) {
+        state.holdAnswers++;
+        const asked = state.recentHeard.slice(0, -1).map((h) => ({ speaker: 'ivr' as const, text: h.text }));
+        const action = await decideAction(transcript, asked);
+        console.log(`[IVR] Question on hold — ${JSON.stringify(action)} callId=${state.callId}`);
+        if ((action.type === 'SAY' || action.type === 'PRESS') && !state.isAgentDetected && !state.isTerminated) {
+          await dispatchAction(state, action).catch(() => {});
+        }
       }
     }
     return;
@@ -887,6 +905,8 @@ function looksLikeLiveRep(transcript: string): boolean {
   return !!m && !NOT_A_NAME.test(m[1]);
 }
 
+/** An automated assistant asking us something: a question, or "please say / tell me / choose". */
+const IVR_ASKS = /\?|\b(?:say|tell me|choose|select)\b/i;
 /** Only a greeting: "Hello?", "Hi.", "Hello there.", "Good morning.", "Hello? Hello?", "Can you hear me?". */
 const BARE_GREETING = /^(?:(?:(?:hello|hi|hey)(?: there)?|good (?:morning|afternoon|evening)|can you hear me|is anyone there|anyone there)[\s.,?!]*)+$/i;
 
