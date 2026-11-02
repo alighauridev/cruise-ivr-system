@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from '@/components/icons';
-import { Badge, EmptyState, LiveDot, PageHeader, STATUS_TONE, StatusBadge, type Tone } from '@/components/ui';
+import { Badge, EmptyState, LiveDot, Modal, PageHeader, STATUS_TONE, StatusBadge, type Tone } from '@/components/ui';
 
 interface Lead {
   id: string;
@@ -178,6 +178,7 @@ export default function AgentPage() {
   }
   // Agency info / standing answers: one box for every cruise line, saved as you type (debounced).
   const [agencyInfo, setAgencyInfo] = useState('');
+  const [agencyInfoOpen, setAgencyInfoOpen] = useState(false);
   const [agencyInfoSave, setAgencyInfoSave] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const agencyInfoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function changeAgencyInfo(value: string) {
@@ -498,8 +499,49 @@ export default function AgentPage() {
       <PageHeader
         title="Call Agent"
         subtitle="Pick a cruise line, set the task, and let the system wait on hold for you."
-        actions={activeCall ? <StatusBadge status={activeCall.status} /> : undefined}
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => setAgencyInfoOpen(true)}
+              className="btn btn-secondary"
+              title="Agency phone, email and standing answers the AI can use on every call"
+            >
+              <Icon name="spark" className="h-4 w-4" />
+              Agency info
+              {agencyInfo.trim() && <span className="h-1.5 w-1.5 rounded-full bg-ok" aria-label="Filled in" />}
+            </button>
+            {activeCall && <StatusBadge status={activeCall.status} />}
+          </>
+        }
       />
+
+      {agencyInfoOpen && (
+        <Modal
+          title="Agency info and standing answers"
+          onClose={() => setAgencyInfoOpen(false)}
+          footer={<button type="button" onClick={() => setAgencyInfoOpen(false)} className="btn btn-primary w-full">Done</button>}
+        >
+          <p className="text-sm text-muted">
+            The AI uses this on every call, for all cruise lines. When a rep asks for something that is here (agency phone, email,
+            address…), it answers instead of handing the call to your team.
+          </p>
+          <textarea
+            rows={10}
+            value={agencyInfo}
+            onChange={(e) => changeAgencyInfo(e.target.value)}
+            placeholder={'Agency phone: (555) 123-4567\nAgency email: bookings@example.com\nAgency address: 123 Main St, City, ST 12345\n\nQ: Who is the travel advisor?\nA: Mitch Bank'}
+            className="input"
+            autoFocus
+          />
+          <p className={`text-xs ${agencyInfoSave === 'error' ? 'text-bad' : agencyInfoSave === 'saved' ? 'text-ok' : 'text-muted'}`}>
+            {agencyInfoSave === 'saving' ? 'Saving…'
+              : agencyInfoSave === 'error' ? 'Could not save — try again'
+              : agencyInfoSave === 'saved' ? '✓ Saved — used on the next call'
+              : 'Saves as you type. Only add things the AI is allowed to say out loud.'}
+          </p>
+        </Modal>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-10 max-lg:px-3">
         <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(420px,560px)_minmax(0,1fr)] lg:grid-rows-[auto_1fr] wide:grid-cols-[560px_minmax(0,1fr)_300px] wide:items-stretch">
@@ -589,27 +631,6 @@ export default function AgentPage() {
                       : aiForm.agencyId.trim() ? '✓ Saved for ' + selectedLead.name
                       : aiTask.trim() ? 'Not set for ' + selectedLead.name + ' — if the rep asks for it, the AI hands the call to your team'
                       : 'Not set for ' + selectedLead.name}
-                  </p>
-                </div>
-
-                {/* Agency info — the same for every cruise line; the AI answers the rep from it */}
-                <div>
-                  <label className="field-label flex items-center gap-1.5">
-                    <Icon name="spark" className="h-4 w-4 text-brand-strong" />
-                    Agency info and standing answers (all cruise lines)
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={agencyInfo}
-                    onChange={(e) => changeAgencyInfo(e.target.value)}
-                    placeholder={'Agency phone: (555) 123-4567\nAgency email: bookings@example.com\nQ: Who is the travel advisor?\nA: Mitch Bank'}
-                    className="input"
-                  />
-                  <p className={`mt-1 text-xs ${agencyInfoSave === 'error' ? 'text-bad' : agencyInfoSave === 'saved' ? 'text-ok' : 'text-muted'}`}>
-                    {agencyInfoSave === 'saving' ? 'Saving…'
-                      : agencyInfoSave === 'error' ? 'Could not save — try again'
-                      : agencyInfoSave === 'saved' ? '✓ Saved — the AI uses it on every call'
-                      : 'The AI uses this when a rep asks (agency phone, email, address…) instead of handing off. Same box as in Settings.'}
                   </p>
                 </div>
 
