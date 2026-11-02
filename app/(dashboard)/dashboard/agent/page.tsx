@@ -176,6 +176,27 @@ export default function AgentPage() {
       }
     }, 600);
   }
+  // Agency info / standing answers: one box for every cruise line, saved as you type (debounced).
+  const [agencyInfo, setAgencyInfo] = useState('');
+  const [agencyInfoSave, setAgencyInfoSave] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const agencyInfoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function changeAgencyInfo(value: string) {
+    setAgencyInfo(value);
+    setAgencyInfoSave('saving');
+    if (agencyInfoTimer.current) clearTimeout(agencyInfoTimer.current);
+    agencyInfoTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/settings/agency-info', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agencyInfo: value }),
+        });
+        setAgencyInfoSave(res.ok ? 'saved' : 'error');
+      } catch {
+        setAgencyInfoSave('error');
+      }
+    }, 800);
+  }
   const [search, setSearch] = useState('');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [callLoading, setCallLoading] = useState(false);
@@ -216,6 +237,7 @@ export default function AgentPage() {
         }
         const def = nums.find((n: TransferNumber) => n.isDefault) ?? nums[0];
         if (def) setSelectedTransferNumberId(def.id);
+        setAgencyInfo(d.settings?.agency_info ?? '');
       });
   }, []);
 
@@ -567,6 +589,27 @@ export default function AgentPage() {
                       : aiForm.agencyId.trim() ? '✓ Saved for ' + selectedLead.name
                       : aiTask.trim() ? 'Not set for ' + selectedLead.name + ' — if the rep asks for it, the AI hands the call to your team'
                       : 'Not set for ' + selectedLead.name}
+                  </p>
+                </div>
+
+                {/* Agency info — the same for every cruise line; the AI answers the rep from it */}
+                <div>
+                  <label className="field-label flex items-center gap-1.5">
+                    <Icon name="spark" className="h-4 w-4 text-brand-strong" />
+                    Agency info and standing answers (all cruise lines)
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={agencyInfo}
+                    onChange={(e) => changeAgencyInfo(e.target.value)}
+                    placeholder={'Agency phone: (555) 123-4567\nAgency email: bookings@example.com\nQ: Who is the travel advisor?\nA: Mitch Bank'}
+                    className="input"
+                  />
+                  <p className={`mt-1 text-xs ${agencyInfoSave === 'error' ? 'text-bad' : agencyInfoSave === 'saved' ? 'text-ok' : 'text-muted'}`}>
+                    {agencyInfoSave === 'saving' ? 'Saving…'
+                      : agencyInfoSave === 'error' ? 'Could not save — try again'
+                      : agencyInfoSave === 'saved' ? '✓ Saved — the AI uses it on every call'
+                      : 'The AI uses this when a rep asks (agency phone, email, address…) instead of handing off. Same box as in Settings.'}
                   </p>
                 </div>
 
