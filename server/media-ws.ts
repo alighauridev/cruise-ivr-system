@@ -108,6 +108,10 @@ interface SessionState {
   endCallNudged: boolean;
   /** Virtual-assistant questions answered after the script went on hold (capped so it can't loop). */
   holdAnswers: number;
+  /** Navigator lookups on hold, including the ones that came back WAIT. */
+  holdAsks: number;
+  /** "Press N" prompts heard since the script went on hold, to spot a menu that keeps repeating. */
+  holdMenusSeen: Array<{ key: string; at: number }>;
   /** Realtime's first reply has been sent; until then Deepgram keeps listening so the AI hears the rep's whole greeting. */
   rtGreetingSent: boolean;
   /** Set once ai_outcome + ai_summary are saved, so cleanup doesn't write a fallback summary. */
@@ -255,6 +259,8 @@ export function handleMediaStream(ws: WebSocket, _req: IncomingMessage) {
             aiFinishing: false,
             endCallNudged: false,
             holdAnswers: 0,
+            holdAsks: 0,
+            holdMenusSeen: [],
             rtGreetingSent: false,
             aiOutcomeSaved: false,
             pendingFinishMark: null,
@@ -640,15 +646,35 @@ async function processIVRSpeech(state: SessionState, transcript: string) {
         }
       }
 
-      // A virtual assistant still asking after the script ran out ("A new cruise, a world cruise,
-      // or a grand voyage?") hangs up if nobody answers, so answer it like a call with no script.
-      if (IVR_ASKS.test(transcript) && state.holdAnswers < 4 && !state.isAgentDetected) {
-        state.holdAnswers++;
-        const asked = state.recentHeard.slice(0, -1).map((h) => ({ speaker: 'ivr' as const, text: h.text }));
-        const action = await decideAction(transcript, asked);
-        console.log(`[IVR] Question on hold — ${JSON.stringify(action)} callId=${state.callId}`);
-        if ((action.type === 'SAY' || action.type === 'PRESS') && !state.isAgentDetected && !state.isTerminated) {
-          await dispatchAction(state, action).catch(() => {});
+      // The script ran out but the line is still asking us something: a virtual assistant's question
+      // ("A new cruise, a world cruise, or a grand voyage?") or a "press N" menu that keeps repeating
+      // because nobody answered it (Celebrity, Carnival). Let the navigator pick the option that fits
+      // the request. A menu heard once is left alone: it may just be routing us to the queue.
+      if (!state.isAgentDetected && state.holdAnswers < 4 && state.holdAsks < 30 && !HOLD_TRAPS.test(transcript)) {
+        const now = Date.now();
+        let ask = false;
+        let heard = transcript;
+        if (PRESS_PROMPT.test(transcript)) {
+          const key = transcript.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/^.*?(if you|to |for |press)/, '$1').slice(0, 40);
+          state.holdMenusSeen = state.holdMenusSeen.filter((m) => now - m.at < 90_000);
+          ask = state.holdMenusSeen.some((m) => m.key === key);
+          state.holdMenusSeen.push({ key, at: now });
+          // The options arrive in pieces ("…individual reservation, press 1" / "…group, press 2"): give the navigator all of them.
+          heard = '[This "press a number" menu has repeated without an answer and will hang up if nobody chooses. Answer PRESS:<digit> for the option that best fits the request.] ' +
+            state.recentHeard.filter((h) => now - h.at < 25_000).map((h) => h.text).join(' ');
+        } else {
+          ask = IVR_ASKS.test(transcript);
+        }
+        if (ask) {
+          state.holdAsks++;
+          const history = state.recentHeard.slice(0, -1).map((h) => ({ speaker: 'ivr' as const, text: h.text }));
+          const request = resolveTask(state.callConfig?.ai_task_details, (state.callConfig?.ai_task as string | null) ?? null)?.request;
+          const action = await decideAction(heard, history, false, request);
+          console.log(`[IVR] Menu/question on hold — ${JSON.stringify(action)} callId=${state.callId}`);
+          if ((action.type === 'SAY' || action.type === 'PRESS') && !state.isAgentDetected && !state.isTerminated) {
+            state.holdAnswers++;
+            await dispatchAction(state, action).catch(() => {});
+          }
         }
       }
     }
@@ -913,6 +939,10 @@ function looksLikeLiveRep(transcript: string): boolean {
   return !!m && !NOT_A_NAME.test(m[1]);
 }
 
+/** A "press N" menu option. */
+const PRESS_PROMPT = /\b(?:press|dial)(?: or say)?\s*(?:\d|one|two|three|four|five|six|seven|eight|nine|zero|pound|star)\b/i;
+/** Hold-line messages that offer a choice we must NOT take (callback, survey, reservation-number entry, ...). */
+const HOLD_TRAPS = /call ?back|continue (?:to )?hold|on hold|survey|feedback|reservation number|booking number|voice ?mail|leave a message|wait time|estimated|your call is/i;
 /** An automated assistant asking us something; transcripts often drop the "?" ("…which type of cruise you're interested in"). */
 const IVR_ASKS = /\?|\b(?:say|tell me|choose|select|share|which|would you like|are you looking|are you calling)\b/i;
 /** Only a greeting: "Hello?", "Hi.", "Hello there.", "Good morning.", "Hello? Hello?", "Can you hear me?". */

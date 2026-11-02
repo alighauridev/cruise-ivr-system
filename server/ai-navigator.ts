@@ -36,15 +36,20 @@ AGENT_DETECTED`;
 export async function decideAction(
   ivrTranscript: string,
   history: ConversationTurn[],
-  forceGpt4o = false
+  forceGpt4o = false,
+  /** What the call is for; steers menu choices toward the option that fits it. */
+  request?: string
 ): Promise<AIAction> {
   const historyText = history
     .map((t) => `${t.speaker === 'ivr' ? 'IVR' : 'US'}: ${t.text}`)
     .join('\n');
 
+  const goal = request
+    ? `\n\nWe are a travel agency calling about: "${request.slice(0, 300)}". Pick the option that fits that and leads to a live person (travel agent line, individual or existing reservation, or general/other inquiries). Never pick callback, voicemail, survey, payment, website, group or new-reservation options unless the request is about that. If no option fits, answer WAIT.`
+    : '';
   const userMessage = history.length > 0
-    ? `Conversation so far:\n${historyText}\n\nIVR just said: "${ivrTranscript}"\n\nWhat should we do?`
-    : `IVR just said: "${ivrTranscript}"\n\nWhat should we do?`;
+    ? `Conversation so far:\n${historyText}\n\nIVR just said: "${ivrTranscript}"${goal}\n\nWhat should we do?`
+    : `IVR just said: "${ivrTranscript}"${goal}\n\nWhat should we do?`;
 
   // Use gpt-4o for complex/long conversations, mini for everything else (faster + cheaper)
   const model = forceGpt4o || history.length > 8 ? 'gpt-4o' : 'gpt-4o-mini';
