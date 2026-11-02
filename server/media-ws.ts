@@ -393,7 +393,8 @@ async function setupSession(state: SessionState, _ws: WebSocket): Promise<void> 
       SELECT c.*, ic.steps,
              u.notification_phone, u.connect_message, u.transfer_numbers,
              (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled,
-             (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine,
+             (SELECT value FROM settings WHERE user_id = u.id AND key = 'agency_info' LIMIT 1) as agency_info
       FROM calls c
       JOIN users u ON u.id = c.user_id
       LEFT JOIN ivr_configs ic ON ic.id = c.ivr_config_id
@@ -964,7 +965,8 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
       const rows = await sql`
         SELECT c.*, u.notification_phone, u.connect_message, u.transfer_numbers,
                (SELECT value FROM settings WHERE user_id = u.id AND key = 'auto_callback_enabled' LIMIT 1) as auto_callback_enabled,
-               (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine
+               (SELECT value FROM settings WHERE user_id = u.id AND key = 'ai_engine' LIMIT 1) as ai_engine,
+               (SELECT value FROM settings WHERE user_id = u.id AND key = 'agency_info' LIMIT 1) as agency_info
         FROM calls c
         JOIN users u ON u.id = c.user_id
         WHERE c.id = ${state.callId}
@@ -977,7 +979,9 @@ async function handleAgentDetected(state: SessionState, transcript: string) {
     }
   }
 
-  const taskDetails = resolveTask(call?.ai_task_details, (call?.ai_task as string | null) ?? null);
+  const baseTask = resolveTask(call?.ai_task_details, (call?.ai_task as string | null) ?? null);
+  const agencyInfo = ((call?.agency_info as string | null) ?? '').trim();
+  const taskDetails = baseTask && agencyInfo ? { ...baseTask, agencyInfo } : baseTask;
   state.aiTaskDetails = taskDetails;
   state.aiTask = taskDetails ? taskDetails.request : null;
 
@@ -1630,7 +1634,8 @@ async function handOffToTeam(state: SessionState, reason: string, summary: strin
   console.log(`[AI] Handing off to ${transferNumber} callId=${state.callId} reason="${reason}"`);
   const room = `CruisePro-${state.callId}`;
   const conf = `<Dial><Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">${room}</Conference></Dial>`;
-  const whisper = escapeXml(`Cruise line rep on the line from the AI. ${reason}. ${summary}`.slice(0, 400));
+  // One short line: the full summary is in Call Logs and the text message, not read out to the team member.
+  const whisper = escapeXml(`Cruise line rep on the line. ${reason}.`.slice(0, 160));
 
   // No pendingRedirects++ here: the new TwiML has no <Stream>, so no new WS will
   // arrive and the 'stop' that follows should run cleanup normally.

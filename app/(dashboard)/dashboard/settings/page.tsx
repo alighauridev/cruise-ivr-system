@@ -33,6 +33,7 @@ export default function SettingsPage() {
     auto_callback_enabled: false,
     ai_engine: 'claude',
     connect_message: '',
+    agency_info: '',
   });
   const [transferNumbers, setTransferNumbers] = useState<TransferNumber[]>([]);
   const [newNumber, setNewNumber] = useState({ name: '', phone: '' });
@@ -50,6 +51,7 @@ export default function SettingsPage() {
           auto_callback_enabled: d.settings?.auto_callback_enabled === 'true',
           ai_engine: d.settings?.ai_engine === 'openai' ? 'openai' : 'claude',
           connect_message: d.user?.connect_message ?? '',
+          agency_info: d.settings?.agency_info ?? '',
         });
         // Load transfer_numbers; fall back to legacy transfer_phone
         const nums: TransferNumber[] = d.user?.transfer_numbers ?? [];
@@ -120,6 +122,7 @@ export default function SettingsPage() {
         settings: {
           auto_callback_enabled: form.auto_callback_enabled ? 'true' : 'false',
           ai_engine: form.ai_engine,
+          agency_info: form.agency_info,
         },
       }),
     });
@@ -232,6 +235,23 @@ export default function SettingsPage() {
                 className="input"
               />
               <p className="mt-2 text-xs text-muted">Leave blank to use the default message.</p>
+            </SectionCard>
+
+            {/* Agency info the AI can answer from */}
+            <SectionCard
+              icon="spark"
+              tone="ai"
+              title="Agency info and standing answers"
+              description="Extra facts and question-and-answer pairs the AI can use on every call, so it answers the rep instead of handing off."
+            >
+              <textarea
+                rows={9}
+                value={form.agency_info}
+                onChange={(e) => setForm((f) => ({ ...f, agency_info: e.target.value }))}
+                placeholder={'Agency phone: (555) 123-4567\nAgency email: bookings@example.com\nAgency address: 123 Main St, City, ST 12345\n\nQ: Who is the travel advisor?\nA: Mitch Bank\n\nQ: What is the best callback number?\nA: (555) 123-4567'}
+                className="input"
+              />
+              <p className="mt-2 text-xs text-muted">Applies to the next call. Only add things the AI is allowed to say out loud.</p>
             </SectionCard>
 
           </div>

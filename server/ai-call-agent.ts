@@ -33,6 +33,7 @@ export interface AiTaskDetails {
   request: string; // the exact ask, in plain words
   mayAgreeTo?: string; // what the AI may accept without checking back
   agentName?: string; // team member the AI is calling for
+  agencyInfo?: string; // standing agency facts / Q&A from Settings, added to every call
 }
 
 export type AiOutcome = 'resolved' | 'partial' | 'not_resolved' | 'handed_off' | 'rep_refused_ai' | 'disconnected';
@@ -92,7 +93,12 @@ HOW TO TALK — like an experienced travel agent who calls cruise lines every da
 FACTS YOU MAY SHARE (this is everything you know — never invent anything else):
 ${factsBlock(t) || '- (none beyond the request)'}
 
-THE REQUEST:
+${t.agencyInfo?.trim()
+    ? `MORE FACTS AND STANDING ANSWERS FROM THE AGENCY (you may share these; when one fits what the rep asks, answer with it instead of handing off):
+${t.agencyInfo.trim().slice(0, 4000)}
+
+`
+    : ''}THE REQUEST:
 ${t.request.trim()}
 
 WHAT YOU MAY AGREE TO WITHOUT CHECKING BACK:
